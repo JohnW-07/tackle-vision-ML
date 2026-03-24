@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tackle-vision-ml"
+version = "0.1.0"
+description = "CPU-friendly pipeline for tackling video kinematics feature extraction"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Tackle Vision" }]
+dependencies = [
+  "numpy>=1.24",
+  "opencv-python-headless>=4.8",
+  "scipy>=1.10",
+  "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.5",
+]
+
+# Heavy vision dependencies are optional so the codebase can still install on CPU-only laptops.
+vision = [
+  "ultralytics>=8.0",
+  "supervision>=0.22",
+  "filterpy>=1.4",
+]
+
+pose3d = [
+  # VideoPose3D isn't published as a single pip package in a consistent way.
+  # We implement the adapter in code and document expected local checkpoint usage.
+]
+
+[project.scripts]
+tackle-vision-ml = "tackle_vision_ml.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
