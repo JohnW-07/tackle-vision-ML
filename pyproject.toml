@@ -15,6 +15,7 @@ dependencies = [
   "opencv-python-headless>=4.8",
   "scipy>=1.10",
   "tqdm>=4.66",
+  "albumentations>=1.4",
 ]
 
 [project.optional-dependencies]

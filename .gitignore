@@ -3,6 +3,12 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+
+
+
+#dont include clips dir
+clips/
+
 # C extensions
 *.so
 
