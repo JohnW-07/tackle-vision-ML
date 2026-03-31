@@ -1,6 +1,7 @@
 README.md
 pyproject.toml
 src/tackle_vision_ml/__init__.py
+src/tackle_vision_ml/augment.py
 src/tackle_vision_ml/cli.py
 src/tackle_vision_ml/config.py
 src/tackle_vision_ml/export.py
