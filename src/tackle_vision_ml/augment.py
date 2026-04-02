@@ -52,6 +52,19 @@ def _open_writer(
 
 
 # ---------------------------------------------------------------------------
+# Section 0: Safety rating [NOT IMPLEMENTED YET -> need cnh team input]
+# ---------------------------------------------------------------------------
+def _assign_safety_rating(video_path: Path) -> int:
+    return 0
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
 # Section 1: Exposure
 # ---------------------------------------------------------------------------
 
@@ -229,6 +242,7 @@ def augment_video(
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     stem = src.stem
+    safety_rating = _assign_safety_rating(src)
     file_seed = hash(src.name) & 0xFFFF_FFFF
     rng = random.Random(file_seed)
 
@@ -249,7 +263,7 @@ def augment_video(
 
     writers: list[cv2.VideoWriter] = []
     for tag, _ in variations:
-        out_path = dst_dir / f"{stem}_{tag}.mp4"
+        out_path = dst_dir / f"{stem}_{safety_rating}_{tag}.mp4"
         writer = _open_writer(out_path, fps, width, height)
         writers.append(writer)
         print(f"  -> {out_path.name}")
