@@ -1,25 +1,22 @@
 """
 Video augmentation pipeline for the tackle dataset.
 
-Generates three deterministic variations per raw video:
-  A  – Mirror       : horizontal flip (opposite-direction tackle)
-  B  – Broadcast    : Gaussian noise + motion blur (low-quality / high-speed footage)
-  C  – Lighting     : brightness & contrast jitter (stadium / weather variation)
+Generates deterministic variations per raw video (same transform on every frame):
 
-  to do:
-  - frame skipping
-  - bit perturbation 
-  - rotations + blocks coming out 
+  A – Mirror        : horizontal flip (opposite-direction tackle)
+  B – Broadcast     : Gaussian noise + motion blur (low-quality / high-speed footage)
+  C – Lighting      : brightness & contrast jitter (stadium / weather variation)
+  D – Rotation      : small in-plane rotation about frame center (fixed angle per clip)
+  E – Shift         : 2D translation in pixels (fixed per clip)
+  F – Rotate+shift  : rotation then translation (camera-style jitter)
 
-  smoke test with our videos first
-  
-
-Temporal consistency is guaranteed by freezing all random parameters **once per
-video** and re-applying the identical transform to every frame.
+Geometric variants (D–F) use one OpenCV affine matrix per clip, sampled once from
+the file-derived RNG so temporal consistency is preserved.
 
 Usage (CLI):
-    python -m tackle_vision_ml.augment                     # raws/ -> augmented/
-    python -m tackle_vision_ml.augment --input my_raws --output my_aug
+    python -m tackle_vision_ml.augment                     # ./raws -> ./output/
+    python -m tackle_vision_ml.augment --raws my_raws --output my_aug
+    python -m tackle_vision_ml.augment --max-rotation-deg 15 --max-shift-frac 0.1
 """
 from __future__ import annotations
 
@@ -37,6 +34,50 @@ import numpy as np
 # Codec preference list – tried in order until one works on the current OS
 # ---------------------------------------------------------------------------
 _CODEC_CANDIDATES = ["avc1", "mp4v"]
+
+
+def _affine_rotation_matrix(
+    rng: random.Random, width: int, height: int, max_deg: float
+) -> np.ndarray:
+    """2×3 OpenCV affine matrix: rotation about image center (degrees)."""
+    angle = rng.uniform(-float(max_deg), float(max_deg))
+    cx, cy = width * 0.5, height * 0.5
+    return cv2.getRotationMatrix2D((cx, cy), angle, 1.0).astype(np.float32)
+
+
+def _affine_shift_matrix(
+    rng: random.Random, width: int, height: int, max_frac: float
+) -> np.ndarray:
+    """2×3 pure translation; shifts are fractions of width/height."""
+    tx = rng.uniform(-float(max_frac), float(max_frac)) * width
+    ty = rng.uniform(-float(max_frac), float(max_frac)) * height
+    return np.array([[1.0, 0.0, tx], [0.0, 1.0, ty]], dtype=np.float32)
+
+
+def _affine_rotate_then_shift(
+    rng: random.Random,
+    width: int,
+    height: int,
+    max_deg: float,
+    max_frac: float,
+) -> np.ndarray:
+    """Rotation about center, then add translation in output pixel space."""
+    m = _affine_rotation_matrix(rng, width, height, max_deg)
+    tx = rng.uniform(-float(max_frac), float(max_frac)) * width
+    ty = rng.uniform(-float(max_frac), float(max_frac)) * height
+    m[0, 2] += tx
+    m[1, 2] += ty
+    return m.astype(np.float32)
+
+
+def _warp_affine_rgb(frame_rgb: np.ndarray, m: np.ndarray, width: int, height: int) -> np.ndarray:
+    return cv2.warpAffine(
+        frame_rgb,
+        m,
+        (width, height),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REFLECT_101,
+    )
 
 
 def _open_writer(
@@ -116,9 +157,15 @@ def _make_variation_c(rng: random.Random) -> A.Compose:
 # Core per-file augmentation
 # ---------------------------------------------------------------------------
 
-def augment_video(src: Path, dst_dir: Path) -> None:
+def augment_video(
+    src: Path,
+    dst_dir: Path,
+    *,
+    max_rotation_deg: float = 12.0,
+    max_shift_frac: float = 0.08,
+) -> None:
     """
-    Read *src*, produce three augmented variants, write to *dst_dir*.
+    Read *src*, produce augmented variants, write to *dst_dir*.
 
     Frame rate and dimensions are preserved exactly.
     """
@@ -145,17 +192,30 @@ def augment_video(src: Path, dst_dir: Path) -> None:
     file_seed = hash(src.name) & 0xFFFF_FFFF
     rng = random.Random(file_seed)
 
-    variations: list[tuple[str, A.Compose]] = [
-        ("A_mirror",     _make_variation_a()),
-        ("B_broadcast",  _make_variation_b(rng)),
-        ("C_lighting",   _make_variation_c(rng)),
+    variations_alb: list[tuple[str, A.Compose]] = [
+        ("A_mirror", _make_variation_a()),
+        ("B_broadcast", _make_variation_b(rng)),
+        ("C_lighting", _make_variation_c(rng)),
+    ]
+    variations_affine: list[tuple[str, np.ndarray]] = [
+        ("D_rotate", _affine_rotation_matrix(rng, width, height, max_rotation_deg)),
+        ("E_shift", _affine_shift_matrix(rng, width, height, max_shift_frac)),
+        (
+            "F_rotate_shift",
+            _affine_rotate_then_shift(rng, width, height, max_rotation_deg, max_shift_frac),
+        ),
     ]
 
     # ------------------------------------------------------------------
     # Open one writer per variation
     # ------------------------------------------------------------------
     writers: list[cv2.VideoWriter] = []
-    for tag, _ in variations:
+    for tag, _ in variations_alb:
+        out_path = dst_dir / f"{stem}_{tag}.mp4"
+        writer = _open_writer(out_path, fps, width, height)
+        writers.append(writer)
+        print(f"  -> {out_path.name}")
+    for tag, _ in variations_affine:
         out_path = dst_dir / f"{stem}_{tag}.mp4"
         writer = _open_writer(out_path, fps, width, height)
         writers.append(writer)
@@ -173,9 +233,15 @@ def augment_video(src: Path, dst_dir: Path) -> None:
         # Albumentations works in RGB; convert once
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
-        for writer, (_, transform) in zip(writers, variations):
+        w_idx = 0
+        for _, transform in variations_alb:
             augmented = transform(image=frame_rgb)["image"]
-            writer.write(cv2.cvtColor(augmented, cv2.COLOR_RGB2BGR))
+            writers[w_idx].write(cv2.cvtColor(augmented, cv2.COLOR_RGB2BGR))
+            w_idx += 1
+        for _, m in variations_affine:
+            warped = _warp_affine_rgb(frame_rgb, m, width, height)
+            writers[w_idx].write(cv2.cvtColor(warped, cv2.COLOR_RGB2BGR))
+            w_idx += 1
 
         frame_idx += 1
         if total > 0 and frame_idx % max(1, total // 10) == 0:
@@ -198,17 +264,34 @@ def main() -> None:
         description="Generate augmented video variants for the tackle dataset."
     )
     parser.add_argument(
-        "--input", default="raws",
-        help="Directory containing raw .mp4 / .mov clips (default: raws/)"
+        "--input",
+        "--raws",
+        dest="input_dir",
+        default="raws",
+        help="Directory containing raw .mp4 / .mov clips (default: ./raws)",
     )
     parser.add_argument(
-        "--output", default="augmented",
-        help="Destination directory for augmented clips (default: augmented/)"
+        "--output",
+        dest="output_dir",
+        default="output",
+        help="Destination directory for augmented clips (default: ./output)",
+    )
+    parser.add_argument(
+        "--max-rotation-deg",
+        type=float,
+        default=12.0,
+        help="Max |rotation| in degrees for D and F (symmetric uniform draw per clip)",
+    )
+    parser.add_argument(
+        "--max-shift-frac",
+        type=float,
+        default=0.08,
+        help="Max |shift| as fraction of frame width/height for E and F (per axis)",
     )
     args = parser.parse_args()
 
-    src_dir = Path(args.input)
-    dst_dir = Path(args.output)
+    src_dir = Path(args.input_dir).expanduser().resolve()
+    dst_dir = Path(args.output_dir).expanduser().resolve()
 
     if not src_dir.exists():
         sys.exit(f"Input directory not found: {src_dir}")
@@ -228,10 +311,16 @@ def main() -> None:
 
     for i, vid in enumerate(video_files, 1):
         print(f"[{i}/{len(video_files)}] Processing: {vid.name}")
-        augment_video(vid, dst_dir)
+        augment_video(
+            vid,
+            dst_dir,
+            max_rotation_deg=args.max_rotation_deg,
+            max_shift_frac=args.max_shift_frac,
+        )
         print()
 
-    print(f"Augmentation complete. {len(video_files) * 3} files written to '{dst_dir}'.")
+    n_variants = 6
+    print(f"Augmentation complete. {len(video_files) * n_variants} files written to '{dst_dir}'.")
 
 
 if __name__ == "__main__":
