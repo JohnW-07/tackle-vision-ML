@@ -13,6 +13,7 @@ Usage (CLI):
     python3 augment.py
     python3 augment.py 3 -exposure
     python3 augment.py 10 -all
+    python3 augment.py 3 -all -upsampled
 """
 from __future__ import annotations
 
@@ -295,8 +296,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--input",
-        default=str(_PROJECT_ROOT / "raws"),
-        help="Directory containing raw .mp4 / .mov clips (default: repo_root/raws/)",
+        default=None,
+        help="Directory containing source .mp4 / .mov clips.",
     )
     parser.add_argument(
         "--output",
@@ -327,6 +328,12 @@ def main() -> None:
         action="store_true",
         help="Apply exposure, blocking, and translation together.",
     )
+    parser.add_argument(
+        "-upsampled",
+        dest="use_upsampled",
+        action="store_true",
+        help="Use repo_root/upsampled/ as the default input directory.",
+    )
     args = parser.parse_args()
 
     if args.num_variations < 1:
@@ -339,7 +346,8 @@ def main() -> None:
     run_blocking = args.blocking or args.all_sections or not selected_any
     run_translation = args.translation or args.all_sections or not selected_any
 
-    src_dir = Path(args.input)
+    default_input_dir = _PROJECT_ROOT / ("upsampled" if args.use_upsampled else "raws")
+    src_dir = Path(args.input) if args.input is not None else default_input_dir
     dst_dir = Path(args.output)
 
     if not src_dir.exists():
