@@ -3,7 +3,12 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Data files
 *.mp4
+
+# Models
+*.pth 
+
 
 
 #dont include clips dir
