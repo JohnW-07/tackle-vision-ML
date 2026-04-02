@@ -1,10 +1,11 @@
 """
 Video augmentation pipeline for the tackle dataset.
 
-The file is organized into three collaboration-friendly sections:
-  1. Exposure       : brightness, contrast, gamma, saturation, white balance
-  2. Random blocking: deterministic block dropout across frames
-  3. Translation    : mirror, slight rotation, and slight translation
+The file is organized into collaboration-friendly sections:
+  1. Exposure        : brightness, contrast, gamma, saturation, white balance
+  2. Random blocking : deterministic block dropout across frames
+  3. Fixed blockout  : 1–3 black rectangles, fixed per video (D_blockout output)
+  4. Translation     : mirror, slight rotation, and slight translation
 
 Temporal consistency is guaranteed by freezing all random parameters once per
 video and re-applying the identical transform to every frame.
@@ -135,8 +136,59 @@ def _make_random_blocking_variation(
     ]
 
 
+def _apply_fixed_blocks(
+    image: np.ndarray, blocks: list[tuple[int, int, int, int]]
+) -> np.ndarray:
+    """Paint each rectangle (x0, y0, x1, y1) in *blocks* black; *x1,y1* exclusive."""
+    out = image.copy()
+    h, w = out.shape[:2]
+    for x0, y0, x1, y1 in blocks:
+        x0 = max(0, min(int(x0), w))
+        x1 = max(0, min(int(x1), w))
+        y0 = max(0, min(int(y0), h))
+        y1 = max(0, min(int(y1), h))
+        if x1 > x0 and y1 > y0:
+            out[y0:y1, x0:x1] = 0
+    return out
+
+
+def _make_variation_d(
+    rng: random.Random, width: int, height: int
+) -> list[A.BasicTransform]:
+    """
+    Sample 1–3 rectangular occlusions once per video; same regions on every frame.
+    """
+    n_blocks = rng.randint(1, 3)
+    min_frac_w, max_frac_w = 0.08, 0.28
+    min_frac_h, max_frac_h = 0.08, 0.28
+    blocks: list[tuple[int, int, int, int]] = []
+    for _ in range(n_blocks):
+        bw = rng.randint(
+            max(8, int(width * min_frac_w)), max(9, int(width * max_frac_w))
+        )
+        bh = rng.randint(
+            max(8, int(height * min_frac_h)), max(9, int(height * max_frac_h))
+        )
+        bw = min(bw, width)
+        bh = min(bh, height)
+        x0 = rng.randint(0, max(0, width - bw))
+        y0 = rng.randint(0, max(0, height - bh))
+        x1 = x0 + bw
+        y1 = y0 + bh
+        blocks.append((x0, y0, x1, y1))
+
+    frozen = list(blocks)
+
+    return [
+        A.Lambda(
+            image=lambda img, b=frozen, **kwargs: _apply_fixed_blocks(img, b),
+            p=1.0,
+        )
+    ]
+
+
 # ---------------------------------------------------------------------------
-# Section 3: Translation
+# Section 4: Translation
 # ---------------------------------------------------------------------------
 
 def _make_translation_variation(rng: random.Random) -> list[A.BasicTransform]:
@@ -247,6 +299,10 @@ def augment_video(
         cap.release()
         return 0
 
+    variations.append(
+        ("D_blockout", A.Compose(_make_variation_d(rng, width, height)))
+    )
+
     writers: list[cv2.VideoWriter] = []
     for tag, _ in variations:
         out_path = dst_dir / f"{stem}_{tag}.mp4"
@@ -292,7 +348,10 @@ def main() -> None:
         nargs="?",
         type=int,
         default=3,
-        help="Number of augmented outputs to generate per raw video (default: 3).",
+        help=(
+            "Number of composite augmented outputs per raw video (default: 3). "
+            "Always writes one additional D_blockout clip (4 files by default)."
+        ),
     )
     parser.add_argument(
         "--input",
@@ -364,7 +423,10 @@ def main() -> None:
 
     print(f"Found {len(video_files)} video(s) in '{src_dir}'")
     print(f"Output directory: '{dst_dir}'")
-    print(f"Variants per raw video: {args.num_variations}")
+    print(
+        f"Output files per raw video: {args.num_variations + 1} "
+        f"({args.num_variations} composite + D_blockout)"
+    )
 
     selected_sections = []
     if run_exposure:
