@@ -3,7 +3,7 @@ from pathlib import Path
 
 def main() -> None:
     project_root = Path(__file__).resolve().parent
-    target_dirs = [project_root / "augmented", project_root / "upsampled"]
+    target_dirs = [project_root / "augmented", project_root / "finals"]
 
     for target_dir in target_dirs:
         if not target_dir.exists():

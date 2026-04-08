@@ -1,2 +1,0 @@
-[console_scripts]
-tackle-vision-ml = tackle_vision_ml.cli:main
