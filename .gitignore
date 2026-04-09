@@ -7,9 +7,12 @@ __pycache__/
 *.mp4
 
 # Models
-*.pth 
+*.pth
 
-
+# YOLO training runs + exported frame/label blobs (keep dataset/data.yaml)
+runs/
+dataset/images/
+dataset/labels/
 
 #dont include clips dir
 clips/

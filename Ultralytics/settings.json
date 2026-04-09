@@ -1,0 +1,21 @@
+{
+  "settings_version": "0.0.6",
+  "datasets_dir": "/Users/netra/Documents/tackle-vision-ML/tackle-vision-ML/datasets",
+  "weights_dir": "/Users/netra/Documents/tackle-vision-ML/tackle-vision-ML/weights",
+  "runs_dir": "/Users/netra/Documents/tackle-vision-ML/tackle-vision-ML/runs",
+  "uuid": "7a80955be3043925e6f3d5ba0126b462c8f7730b676157d4b97e6c1b81899bff",
+  "sync": true,
+  "api_key": "",
+  "openai_api_key": "",
+  "clearml": true,
+  "comet": true,
+  "dvc": true,
+  "hub": true,
+  "mlflow": true,
+  "neptune": true,
+  "raytune": true,
+  "tensorboard": false,
+  "wandb": false,
+  "vscode_msg": true,
+  "openvino_msg": true
+}

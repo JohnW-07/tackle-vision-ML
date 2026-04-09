@@ -1,0 +1,13 @@
+# YOLO dataset for class `tackler` (single class, id 0).
+# Paths are resolved relative to this file's directory (the `dataset/` folder).
+#
+# After extraction you should have:
+#   images/train/*.jpg   images/val/*.jpg
+#   labels/train/*.txt   labels/val/*.txt
+# with matching stems (e.g. clip01_000042.jpg ↔ clip01_000042.txt).
+path: .
+train: images/train
+val: images/val
+nc: 1
+names:
+  0: tackler
