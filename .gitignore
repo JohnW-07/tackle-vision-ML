@@ -8,7 +8,7 @@ __pycache__/
 
 # Models
 *.pth
-
+*.txt
 # YOLO training runs + exported frame/label blobs (keep dataset/data.yaml)
 runs/
 dataset/images/
@@ -19,6 +19,7 @@ clips/
 
 # C extensions
 *.so
+*.pt
 
 # Distribution / packaging
 .Python
