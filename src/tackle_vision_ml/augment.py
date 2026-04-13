@@ -52,6 +52,142 @@ def _open_writer(
     )
 
 
+def _draw_black_box(
+    frame_bgr: np.ndarray, x0: int, y0: int, box_w: int, box_h: int
+) -> np.ndarray:
+    """Overlay a black rectangle on *frame_bgr* and return the result."""
+    out = frame_bgr.copy()
+    h, w = out.shape[:2]
+    x0 = max(0, min(int(x0), w))
+    y0 = max(0, min(int(y0), h))
+    x1 = max(x0, min(int(x0 + box_w), w))
+    y1 = max(y0, min(int(y0 + box_h), h))
+    if x1 > x0 and y1 > y0:
+        out[y0:y1, x0:x1] = 0
+    return out
+
+
+def augment_blocking_80_20(
+    video_files: list[Path],
+    dst_dir: Path,
+    random_ratio: float = 0.8,
+    box_size_ratio: float = 0.18,
+    seed: int = 42,
+) -> int:
+    """
+    Apply an 80/20 blocking split across input videos.
+
+    Expected input:
+      - *video_files*: list of input video Paths (.mp4/.mov) to process.
+      - *dst_dir*: output directory where augmented videos are written.
+      - *random_ratio*: fraction of videos assigned to randomized blocking.
+      - *box_size_ratio*: black-box size as a fraction of frame width/height.
+      - *seed*: deterministic seed for split assignment and random positions.
+
+    Output:
+      - Writes one augmented clip per input video with suffix:
+          - *_random_block.mp4* for randomized blocking videos
+          - *_linear_block.mp4* for linear blocking videos
+      - Returns the number of output videos written.
+
+    Strategy:
+      1) Deterministically shuffle all input videos using *seed*.
+      2) Assign the first ceil(N * random_ratio) videos to randomized blocking,
+         and the remainder to linear blocking. For N=10 and ratio=0.8, this
+         yields exactly 8 randomized and 2 linear videos.
+      3) Randomized blocking: each frame gets one black rectangle at a fresh
+         random (x, y) location.
+      4) Linear blocking: one black rectangle moves left-to-right with constant
+         speed across frames (y fixed per video), creating a temporal motion
+         pattern the model can learn through occlusion.
+    """
+    if not video_files:
+        return 0
+
+    dst_dir.mkdir(parents=True, exist_ok=True)
+
+    shuffled = list(video_files)
+    split_rng = random.Random(seed)
+    split_rng.shuffle(shuffled)
+    random_count = int(round(len(shuffled) * random_ratio))
+    random_count = max(0, min(random_count, len(shuffled)))
+
+    randomized_set = set(shuffled[:random_count])
+    written = 0
+
+    for idx, src in enumerate(video_files, 1):
+        mode = "random" if src in randomized_set else "linear"
+        print(f"[{idx}/{len(video_files)}] {src.name} -> {mode} blocking")
+
+        cap = cv2.VideoCapture(str(src))
+        if not cap.isOpened():
+            print(f"  [SKIP] Cannot open: {src}", file=sys.stderr)
+            continue
+
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        if fps < 1e-6:
+            fps = 30.0
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        if width <= 0 or height <= 0:
+            print(f"  [SKIP] Invalid dimensions: {src}", file=sys.stderr)
+            cap.release()
+            continue
+
+        box_w = max(8, int(width * box_size_ratio))
+        box_h = max(8, int(height * box_size_ratio))
+
+        # Use file-specific RNG so random positions are stable per input file.
+        per_file_rng = random.Random((hash(src.name) ^ seed) & 0xFFFF_FFFF)
+        y_linear = per_file_rng.randint(0, max(0, height - box_h))
+
+        suffix = "random_block" if mode == "random" else "linear_block"
+        out_path = dst_dir / f"{src.stem}_{suffix}.mp4"
+        writer = _open_writer(out_path, fps, width, height)
+        print(f"  -> {out_path.name}")
+
+        frame_idx = 0
+        while True:
+            ok, frame_bgr = cap.read()
+            if not ok:
+                break
+
+            if mode == "random":
+                x0 = per_file_rng.randint(0, max(0, width - box_w))
+                y0 = per_file_rng.randint(0, max(0, height - box_h))
+            else:
+                # Linear pass from left to right over the clip duration.
+                if total > 1:
+                    progress = frame_idx / (total - 1)
+                else:
+                    progress = 0.0
+                x0 = int(progress * max(0, width - box_w))
+                y0 = y_linear
+
+            out_frame = _draw_black_box(frame_bgr, x0, y0, box_w, box_h)
+            writer.write(out_frame)
+
+            frame_idx += 1
+            if total > 0 and frame_idx % max(1, total // 10) == 0:
+                pct = 100 * frame_idx / total
+                print(f"     {frame_idx}/{total} frames ({pct:.0f}%)")
+
+        cap.release()
+        writer.release()
+        print(f"  [DONE] {frame_idx} frames written")
+        written += 1
+
+    random_actual = sum(1 for v in video_files if v in randomized_set)
+    linear_actual = len(video_files) - random_actual
+    print(
+        f"Blocking split complete: {random_actual} randomized, "
+        f"{linear_actual} linear. ({written} files written)"
+    )
+    return written
+
+
 # ---------------------------------------------------------------------------
 # Section 1: Exposure
 # ---------------------------------------------------------------------------
@@ -393,6 +529,15 @@ def main() -> None:
         action="store_true",
         help="Use repo_root/upsampled/ as the default input directory.",
     )
+    parser.add_argument(
+        "--blocking-split-80-20",
+        dest="blocking_split_80_20",
+        action="store_true",
+        help=(
+            "Run only the requested 80/20 blocking mode: 80% randomized "
+            "per-frame block position, 20% linearly moving block."
+        ),
+    )
     args = parser.parse_args()
 
     if args.num_variations < 1:
@@ -423,6 +568,12 @@ def main() -> None:
 
     print(f"Found {len(video_files)} video(s) in '{src_dir}'")
     print(f"Output directory: '{dst_dir}'")
+
+    if args.blocking_split_80_20:
+        total_outputs = augment_blocking_80_20(video_files, dst_dir)
+        print(f"Augmentation complete. {total_outputs} files written to '{dst_dir}'.")
+        return
+
     print(
         f"Output files per raw video: {args.num_variations + 1} "
         f"({args.num_variations} composite + D_blockout)"
