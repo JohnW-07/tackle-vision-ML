@@ -3,355 +3,450 @@
   "metadata": {
     "frames_processed": 10,
     "frames_with_pose": 5,
-    "pose_class_id": 0,
-    "source_fps_assumed": 30.0,
-    "pixels_per_metre_estimated": 60.05,
-    "scale_method": "shoulder_width",
-    "shoulder_width_assumption_m": 0.45,
-    "hip_width_assumption_m": 0.35,
-    "caveats": "Kinematics are derived from 2D projected pixel positions. Out-of-plane motion is not captured. Scale is estimated from assumed body proportions. All values are screening indicators only and should not be used as definitive clinical measurements."
-  },
-  "joint_kinematics": {
-    "nose": {
-      "frames_visible": 0,
-      "mean_confidence": 0.028,
-      "note": "insufficient visible frames for kinematics"
-    },
-    "left_shoulder": {
-      "frames_visible": 4,
-      "mean_confidence": 0.984,
-      "max_speed_m_s": 25.53,
-      "max_acceleration_g": 48.506,
-      "mean_acceleration_g": 31.954,
-      "max_jerk_g_per_s": 690.932,
-      "peak_accel_frame": 2
-    },
-    "right_shoulder": {
-      "frames_visible": 4,
-      "mean_confidence": 0.974,
-      "max_speed_m_s": 21.72,
-      "max_acceleration_g": 42.709,
-      "mean_acceleration_g": 31.155,
-      "max_jerk_g_per_s": 535.547,
-      "peak_accel_frame": 2
-    },
-    "left_elbow": {
-      "frames_visible": 4,
-      "mean_confidence": 0.91,
-      "max_speed_m_s": 34.433,
-      "max_acceleration_g": 63.254,
-      "mean_acceleration_g": 43.173,
-      "max_jerk_g_per_s": 981.723,
-      "peak_accel_frame": 3
-    },
-    "right_elbow": {
-      "frames_visible": 4,
-      "mean_confidence": 0.841,
-      "max_speed_m_s": 23.203,
-      "max_acceleration_g": 43.334,
-      "mean_acceleration_g": 31.792,
-      "max_jerk_g_per_s": 578.39,
-      "peak_accel_frame": 2
-    },
-    "left_hip": {
-      "frames_visible": 4,
-      "mean_confidence": 0.994,
-      "max_speed_m_s": 28.164,
-      "max_acceleration_g": 53.12,
-      "mean_acceleration_g": 36.911,
-      "max_jerk_g_per_s": 710.692,
-      "peak_accel_frame": 2
-    },
-    "right_hip": {
-      "frames_visible": 4,
-      "mean_confidence": 0.993,
-      "max_speed_m_s": 26.444,
-      "max_acceleration_g": 50.943,
-      "mean_acceleration_g": 37.405,
-      "max_jerk_g_per_s": 632.544,
-      "peak_accel_frame": 2
-    },
-    "left_knee": {
-      "frames_visible": 4,
-      "mean_confidence": 0.976,
-      "max_speed_m_s": 28.121,
-      "max_acceleration_g": 49.951,
-      "mean_acceleration_g": 37.281,
-      "max_jerk_g_per_s": 608.918,
-      "peak_accel_frame": 2
-    },
-    "right_knee": {
-      "frames_visible": 4,
-      "mean_confidence": 0.964,
-      "max_speed_m_s": 27.98,
-      "max_acceleration_g": 57.002,
-      "mean_acceleration_g": 42.42,
-      "max_jerk_g_per_s": 692.26,
-      "peak_accel_frame": 2
-    },
-    "left_ankle": {
-      "frames_visible": 4,
-      "mean_confidence": 0.927,
-      "max_speed_m_s": 32.308,
-      "max_acceleration_g": 53.664,
-      "mean_acceleration_g": 43.673,
-      "max_jerk_g_per_s": 564.568,
-      "peak_accel_frame": 2
-    },
-    "right_ankle": {
-      "frames_visible": 4,
-      "mean_confidence": 0.905,
-      "max_speed_m_s": 34.274,
-      "max_acceleration_g": 69.544,
-      "mean_acceleration_g": 49.139,
-      "max_jerk_g_per_s": 907.246,
-      "peak_accel_frame": 2
-    }
-  },
-  "joint_angles": {
-    "left_knee": {
-      "mean_deg": 172.5,
-      "min_deg": 167.1,
-      "max_deg": 179.5,
-      "range_deg": 12.4,
-      "n_frames": 4
-    },
-    "right_knee": {
-      "mean_deg": 166.6,
-      "min_deg": 159.5,
-      "max_deg": 178.7,
-      "range_deg": 19.2,
-      "n_frames": 4
-    },
-    "left_hip": {
-      "mean_deg": 170.9,
-      "min_deg": 166.5,
-      "max_deg": 178.4,
-      "range_deg": 11.9,
-      "n_frames": 4
-    },
-    "right_hip": {
-      "mean_deg": 156.3,
-      "min_deg": 155.7,
-      "max_deg": 156.8,
-      "range_deg": 1.1,
-      "n_frames": 4
-    },
-    "left_shoulder": {
-      "mean_deg": 47.4,
-      "min_deg": 21.4,
-      "max_deg": 73.9,
-      "range_deg": 52.5,
-      "n_frames": 4
-    },
-    "right_shoulder": {
-      "mean_deg": 48.4,
-      "min_deg": 33.6,
-      "max_deg": 82.0,
-      "range_deg": 48.4,
-      "n_frames": 4
-    }
-  },
-  "body_orientation": {
-    "spine_angle_from_vertical": {
-      "mean_deg": 5.6,
-      "min_deg": 0.7,
-      "max_deg": 12.3,
-      "range_deg": 11.6,
-      "n_frames": 4
-    }
-  },
-  "injury_risk_summary": {
-    "overall_risk_level": "high",
-    "risk_flags": [
-      {
-        "joint": "left_shoulder",
-        "metric": "acceleration_g",
-        "value": 48.506,
-        "threshold": 10.0,
-        "severity": "high",
-        "note": "Extreme joint acceleration"
-      },
-      {
-        "joint": "right_shoulder",
-        "metric": "acceleration_g",
-        "value": 42.709,
-        "threshold": 10.0,
-        "severity": "high",
-        "note": "Extreme joint acceleration"
-      },
-      {
-        "joint": "left_elbow",
-        "metric": "acceleration_g",
-        "value": 63.254,
-        "threshold": 10.0,
-        "severity": "high",
-        "note": "Extreme joint acceleration"
-      },
-      {
-        "joint": "right_elbow",
-        "metric": "acceleration_g",
-        "value": 43.334,
-        "threshold": 10.0,
-        "severity": "high",
-        "note": "Extreme joint acceleration"
-      },
-      {
-        "joint": "left_hip",
-        "metric": "acceleration_g",
-        "value": 53.12,
-        "threshold": 10.0,
-        "severity": "high",
-        "note": "Extreme joint acceleration"
-      },
-      {
-        "joint": "right_hip",
-        "metric": "acceleration_g",
-        "value": 50.943,
-        "threshold": 10.0,
-        "severity": "high",
-        "note": "Extreme joint acceleration"
-      },
-      {
-        "joint": "left_knee",
-        "metric": "acceleration_g",
-        "value": 49.951,
-        "threshold": 10.0,
-        "severity": "high",
-        "note": "Extreme joint acceleration"
-      },
-      {
-        "joint": "right_knee",
-        "metric": "acceleration_g",
-        "value": 57.002,
-        "threshold": 10.0,
-        "severity": "high",
-        "note": "Extreme joint acceleration"
-      },
-      {
-        "joint": "left_ankle",
-        "metric": "acceleration_g",
-        "value": 53.664,
-        "threshold": 10.0,
-        "severity": "high",
-        "note": "Extreme joint acceleration"
-      },
-      {
-        "joint": "right_ankle",
-        "metric": "acceleration_g",
-        "value": 69.544,
-        "threshold": 10.0,
-        "severity": "high",
-        "note": "Extreme joint acceleration"
-      },
-      {
-        "joint": "left_shoulder",
-        "metric": "jerk_g_per_s",
-        "value": 690.932,
-        "threshold": 30.0,
-        "severity": "moderate",
-        "note": "High rate-of-force change \u2014 soft tissue loading indicator"
-      },
-      {
-        "joint": "right_shoulder",
-        "metric": "jerk_g_per_s",
-        "value": 535.547,
-        "threshold": 30.0,
-        "severity": "moderate",
-        "note": "High rate-of-force change \u2014 soft tissue loading indicator"
-      },
-      {
-        "joint": "left_elbow",
-        "metric": "jerk_g_per_s",
-        "value": 981.723,
-        "threshold": 30.0,
-        "severity": "moderate",
-        "note": "High rate-of-force change \u2014 soft tissue loading indicator"
-      },
-      {
-        "joint": "right_elbow",
-        "metric": "jerk_g_per_s",
-        "value": 578.39,
-        "threshold": 30.0,
-        "severity": "moderate",
-        "note": "High rate-of-force change \u2014 soft tissue loading indicator"
-      },
-      {
-        "joint": "left_hip",
-        "metric": "jerk_g_per_s",
-        "value": 710.692,
-        "threshold": 30.0,
-        "severity": "moderate",
-        "note": "High rate-of-force change \u2014 soft tissue loading indicator"
-      },
-      {
-        "joint": "right_hip",
-        "metric": "jerk_g_per_s",
-        "value": 632.544,
-        "threshold": 30.0,
-        "severity": "moderate",
-        "note": "High rate-of-force change \u2014 soft tissue loading indicator"
-      },
-      {
-        "joint": "left_knee",
-        "metric": "jerk_g_per_s",
-        "value": 608.918,
-        "threshold": 30.0,
-        "severity": "moderate",
-        "note": "High rate-of-force change \u2014 soft tissue loading indicator"
-      },
-      {
-        "joint": "right_knee",
-        "metric": "jerk_g_per_s",
-        "value": 692.26,
-        "threshold": 30.0,
-        "severity": "moderate",
-        "note": "High rate-of-force change \u2014 soft tissue loading indicator"
-      },
-      {
-        "joint": "left_ankle",
-        "metric": "jerk_g_per_s",
-        "value": 564.568,
-        "threshold": 30.0,
-        "severity": "moderate",
-        "note": "High rate-of-force change \u2014 soft tissue loading indicator"
-      },
-      {
-        "joint": "right_ankle",
-        "metric": "jerk_g_per_s",
-        "value": 907.246,
-        "threshold": 30.0,
-        "severity": "moderate",
-        "note": "High rate-of-force change \u2014 soft tissue loading indicator"
-      },
-      {
-        "joint": "left_knee",
-        "metric": "flexion_deg",
-        "value": 179.5,
-        "threshold": 150.0,
-        "severity": "moderate",
-        "note": "Extreme knee flexion \u2014 ligament loading indicator"
-      },
-      {
-        "joint": "right_knee",
-        "metric": "flexion_deg",
-        "value": 178.7,
-        "threshold": 150.0,
-        "severity": "moderate",
-        "note": "Extreme knee flexion \u2014 ligament loading indicator"
-      }
+    "roles": [
+      "BallCarrier",
+      "Tackler"
     ],
-    "peak_accelerations_g_ranked": {
-      "right_ankle": 69.544,
-      "left_elbow": 63.254,
-      "right_knee": 57.002,
-      "left_ankle": 53.664,
-      "left_hip": 53.12,
-      "right_hip": 50.943,
-      "left_knee": 49.951,
-      "left_shoulder": 48.506,
-      "right_elbow": 43.334,
-      "right_shoulder": 42.709
+    "source_fps_assumed": 30.0
+  },
+  "roles": {
+    "BallCarrier": {
+      "joint_kinematics": {
+        "nose": {
+          "frames_visible": 0,
+          "mean_confidence": 0.028,
+          "note": "insufficient visible frames for kinematics"
+        },
+        "left_shoulder": {
+          "frames_visible": 4,
+          "mean_confidence": 0.984,
+          "max_speed_m_s": 25.53,
+          "max_acceleration_g": 48.506,
+          "mean_acceleration_g": 31.954,
+          "max_jerk_g_per_s": 690.932,
+          "peak_accel_frame": 2
+        },
+        "right_shoulder": {
+          "frames_visible": 4,
+          "mean_confidence": 0.974,
+          "max_speed_m_s": 21.72,
+          "max_acceleration_g": 42.709,
+          "mean_acceleration_g": 31.155,
+          "max_jerk_g_per_s": 535.547,
+          "peak_accel_frame": 2
+        },
+        "left_elbow": {
+          "frames_visible": 4,
+          "mean_confidence": 0.91,
+          "max_speed_m_s": 34.433,
+          "max_acceleration_g": 63.254,
+          "mean_acceleration_g": 43.173,
+          "max_jerk_g_per_s": 981.723,
+          "peak_accel_frame": 3
+        },
+        "right_elbow": {
+          "frames_visible": 4,
+          "mean_confidence": 0.841,
+          "max_speed_m_s": 23.203,
+          "max_acceleration_g": 43.334,
+          "mean_acceleration_g": 31.792,
+          "max_jerk_g_per_s": 578.39,
+          "peak_accel_frame": 2
+        },
+        "left_hip": {
+          "frames_visible": 4,
+          "mean_confidence": 0.994,
+          "max_speed_m_s": 28.164,
+          "max_acceleration_g": 53.12,
+          "mean_acceleration_g": 36.911,
+          "max_jerk_g_per_s": 710.692,
+          "peak_accel_frame": 2
+        },
+        "right_hip": {
+          "frames_visible": 4,
+          "mean_confidence": 0.993,
+          "max_speed_m_s": 26.444,
+          "max_acceleration_g": 50.943,
+          "mean_acceleration_g": 37.405,
+          "max_jerk_g_per_s": 632.544,
+          "peak_accel_frame": 2
+        },
+        "left_knee": {
+          "frames_visible": 4,
+          "mean_confidence": 0.976,
+          "max_speed_m_s": 28.121,
+          "max_acceleration_g": 49.951,
+          "mean_acceleration_g": 37.281,
+          "max_jerk_g_per_s": 608.918,
+          "peak_accel_frame": 2
+        },
+        "right_knee": {
+          "frames_visible": 4,
+          "mean_confidence": 0.964,
+          "max_speed_m_s": 27.98,
+          "max_acceleration_g": 57.002,
+          "mean_acceleration_g": 42.42,
+          "max_jerk_g_per_s": 692.26,
+          "peak_accel_frame": 2
+        },
+        "left_ankle": {
+          "frames_visible": 4,
+          "mean_confidence": 0.927,
+          "max_speed_m_s": 32.308,
+          "max_acceleration_g": 53.664,
+          "mean_acceleration_g": 43.673,
+          "max_jerk_g_per_s": 564.568,
+          "peak_accel_frame": 2
+        },
+        "right_ankle": {
+          "frames_visible": 4,
+          "mean_confidence": 0.905,
+          "max_speed_m_s": 34.274,
+          "max_acceleration_g": 69.544,
+          "mean_acceleration_g": 49.139,
+          "max_jerk_g_per_s": 907.246,
+          "peak_accel_frame": 2
+        }
+      },
+      "joint_angles": {
+        "left_knee": {
+          "mean_deg": 172.5,
+          "min_deg": 167.1,
+          "max_deg": 179.5,
+          "range_deg": 12.4,
+          "n_frames": 4
+        },
+        "right_knee": {
+          "mean_deg": 166.6,
+          "min_deg": 159.5,
+          "max_deg": 178.7,
+          "range_deg": 19.2,
+          "n_frames": 4
+        },
+        "left_hip": {
+          "mean_deg": 170.9,
+          "min_deg": 166.5,
+          "max_deg": 178.4,
+          "range_deg": 11.9,
+          "n_frames": 4
+        },
+        "right_hip": {
+          "mean_deg": 156.3,
+          "min_deg": 155.7,
+          "max_deg": 156.8,
+          "range_deg": 1.1,
+          "n_frames": 4
+        },
+        "left_shoulder": {
+          "mean_deg": 47.4,
+          "min_deg": 21.4,
+          "max_deg": 73.9,
+          "range_deg": 52.5,
+          "n_frames": 4
+        },
+        "right_shoulder": {
+          "mean_deg": 48.4,
+          "min_deg": 33.6,
+          "max_deg": 82.0,
+          "range_deg": 48.4,
+          "n_frames": 4
+        }
+      },
+      "body_orientation": {
+        "spine_angle_from_vertical": {
+          "mean_deg": 5.6,
+          "min_deg": 0.7,
+          "max_deg": 12.3,
+          "range_deg": 11.6,
+          "n_frames": 4
+        }
+      },
+      "injury_risk_summary": {
+        "overall_risk_level": "high",
+        "risk_flags": [
+          {
+            "joint": "left_shoulder",
+            "metric": "acceleration_g",
+            "value": 48.506,
+            "threshold": 10.0,
+            "severity": "high",
+            "note": "Extreme joint acceleration"
+          },
+          {
+            "joint": "right_shoulder",
+            "metric": "acceleration_g",
+            "value": 42.709,
+            "threshold": 10.0,
+            "severity": "high",
+            "note": "Extreme joint acceleration"
+          },
+          {
+            "joint": "left_elbow",
+            "metric": "acceleration_g",
+            "value": 63.254,
+            "threshold": 10.0,
+            "severity": "high",
+            "note": "Extreme joint acceleration"
+          },
+          {
+            "joint": "right_elbow",
+            "metric": "acceleration_g",
+            "value": 43.334,
+            "threshold": 10.0,
+            "severity": "high",
+            "note": "Extreme joint acceleration"
+          },
+          {
+            "joint": "left_hip",
+            "metric": "acceleration_g",
+            "value": 53.12,
+            "threshold": 10.0,
+            "severity": "high",
+            "note": "Extreme joint acceleration"
+          },
+          {
+            "joint": "right_hip",
+            "metric": "acceleration_g",
+            "value": 50.943,
+            "threshold": 10.0,
+            "severity": "high",
+            "note": "Extreme joint acceleration"
+          },
+          {
+            "joint": "left_knee",
+            "metric": "acceleration_g",
+            "value": 49.951,
+            "threshold": 10.0,
+            "severity": "high",
+            "note": "Extreme joint acceleration"
+          },
+          {
+            "joint": "right_knee",
+            "metric": "acceleration_g",
+            "value": 57.002,
+            "threshold": 10.0,
+            "severity": "high",
+            "note": "Extreme joint acceleration"
+          },
+          {
+            "joint": "left_ankle",
+            "metric": "acceleration_g",
+            "value": 53.664,
+            "threshold": 10.0,
+            "severity": "high",
+            "note": "Extreme joint acceleration"
+          },
+          {
+            "joint": "right_ankle",
+            "metric": "acceleration_g",
+            "value": 69.544,
+            "threshold": 10.0,
+            "severity": "high",
+            "note": "Extreme joint acceleration"
+          },
+          {
+            "joint": "left_shoulder",
+            "metric": "jerk_g_per_s",
+            "value": 690.932,
+            "threshold": 30.0,
+            "severity": "moderate",
+            "note": "High rate-of-force change \u2014 soft tissue loading indicator"
+          },
+          {
+            "joint": "right_shoulder",
+            "metric": "jerk_g_per_s",
+            "value": 535.547,
+            "threshold": 30.0,
+            "severity": "moderate",
+            "note": "High rate-of-force change \u2014 soft tissue loading indicator"
+          },
+          {
+            "joint": "left_elbow",
+            "metric": "jerk_g_per_s",
+            "value": 981.723,
+            "threshold": 30.0,
+            "severity": "moderate",
+            "note": "High rate-of-force change \u2014 soft tissue loading indicator"
+          },
+          {
+            "joint": "right_elbow",
+            "metric": "jerk_g_per_s",
+            "value": 578.39,
+            "threshold": 30.0,
+            "severity": "moderate",
+            "note": "High rate-of-force change \u2014 soft tissue loading indicator"
+          },
+          {
+            "joint": "left_hip",
+            "metric": "jerk_g_per_s",
+            "value": 710.692,
+            "threshold": 30.0,
+            "severity": "moderate",
+            "note": "High rate-of-force change \u2014 soft tissue loading indicator"
+          },
+          {
+            "joint": "right_hip",
+            "metric": "jerk_g_per_s",
+            "value": 632.544,
+            "threshold": 30.0,
+            "severity": "moderate",
+            "note": "High rate-of-force change \u2014 soft tissue loading indicator"
+          },
+          {
+            "joint": "left_knee",
+            "metric": "jerk_g_per_s",
+            "value": 608.918,
+            "threshold": 30.0,
+            "severity": "moderate",
+            "note": "High rate-of-force change \u2014 soft tissue loading indicator"
+          },
+          {
+            "joint": "right_knee",
+            "metric": "jerk_g_per_s",
+            "value": 692.26,
+            "threshold": 30.0,
+            "severity": "moderate",
+            "note": "High rate-of-force change \u2014 soft tissue loading indicator"
+          },
+          {
+            "joint": "left_ankle",
+            "metric": "jerk_g_per_s",
+            "value": 564.568,
+            "threshold": 30.0,
+            "severity": "moderate",
+            "note": "High rate-of-force change \u2014 soft tissue loading indicator"
+          },
+          {
+            "joint": "right_ankle",
+            "metric": "jerk_g_per_s",
+            "value": 907.246,
+            "threshold": 30.0,
+            "severity": "moderate",
+            "note": "High rate-of-force change \u2014 soft tissue loading indicator"
+          },
+          {
+            "joint": "left_knee",
+            "metric": "flexion_deg",
+            "value": 179.5,
+            "threshold": 150.0,
+            "severity": "moderate",
+            "note": "Extreme knee flexion \u2014 ligament loading indicator"
+          },
+          {
+            "joint": "right_knee",
+            "metric": "flexion_deg",
+            "value": 178.7,
+            "threshold": 150.0,
+            "severity": "moderate",
+            "note": "Extreme knee flexion \u2014 ligament loading indicator"
+          }
+        ],
+        "peak_accelerations_g_ranked": {
+          "right_ankle": 69.544,
+          "left_elbow": 63.254,
+          "right_knee": 57.002,
+          "left_ankle": 53.664,
+          "left_hip": 53.12,
+          "right_hip": 50.943,
+          "left_knee": 49.951,
+          "left_shoulder": 48.506,
+          "right_elbow": 43.334,
+          "right_shoulder": 42.709
+        }
+      }
+    },
+    "Tackler": {
+      "joint_kinematics": {},
+      "joint_angles": {
+        "left_knee": {
+          "mean_deg": 155.4,
+          "min_deg": 155.4,
+          "max_deg": 155.4,
+          "range_deg": 0.0,
+          "n_frames": 1
+        },
+        "right_knee": {
+          "mean_deg": 138.8,
+          "min_deg": 138.8,
+          "max_deg": 138.8,
+          "range_deg": 0.0,
+          "n_frames": 1
+        },
+        "left_hip": {
+          "mean_deg": 153.6,
+          "min_deg": 153.6,
+          "max_deg": 153.6,
+          "range_deg": 0.0,
+          "n_frames": 1
+        },
+        "right_hip": {
+          "mean_deg": 84.3,
+          "min_deg": 84.3,
+          "max_deg": 84.3,
+          "range_deg": 0.0,
+          "n_frames": 1
+        },
+        "left_shoulder": {
+          "mean_deg": 105.0,
+          "min_deg": 105.0,
+          "max_deg": 105.0,
+          "range_deg": 0.0,
+          "n_frames": 1
+        },
+        "right_shoulder": {
+          "mean_deg": 65.3,
+          "min_deg": 65.3,
+          "max_deg": 65.3,
+          "range_deg": 0.0,
+          "n_frames": 1
+        }
+      },
+      "body_orientation": {
+        "neck_angle_from_vertical": {
+          "mean_deg": 104.2,
+          "min_deg": 104.2,
+          "max_deg": 104.2,
+          "range_deg": 0.0,
+          "n_frames": 1
+        },
+        "spine_angle_from_vertical": {
+          "mean_deg": 47.6,
+          "min_deg": 47.6,
+          "max_deg": 47.6,
+          "range_deg": 0.0,
+          "n_frames": 1
+        }
+      },
+      "injury_risk_summary": {
+        "overall_risk_level": "high",
+        "risk_flags": [
+          {
+            "joint": "left_knee",
+            "metric": "flexion_deg",
+            "value": 155.4,
+            "threshold": 150.0,
+            "severity": "moderate",
+            "note": "Extreme knee flexion \u2014 ligament loading indicator"
+          },
+          {
+            "joint": "neck",
+            "metric": "angle_from_vertical_deg",
+            "value": 104.2,
+            "threshold": 45.0,
+            "severity": "high",
+            "note": "High neck flexion \u2014 cervical spine loading indicator"
+          },
+          {
+            "joint": "spine",
+            "metric": "trunk_lean_deg",
+            "value": 47.6,
+            "threshold": 45.0,
+            "severity": "moderate",
+            "note": "High trunk lean \u2014 lumbar loading indicator"
+          }
+        ],
+        "peak_accelerations_g_ranked": {}
+      }
     }
   }
 }

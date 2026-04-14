@@ -35,7 +35,23 @@ except ImportError as e:
 
 
 # ── Edit these constants to change pipeline behaviour ─────────────────────────
-POSE_CLASS_ID      = 0                  # Annotation class ID to run pose estimation on
+# Roboflow label convention: 0=BallCarrier, 1=FirstTouch, 3=Tackler
+# Each entry: label, skeleton_color (BGR), keypoint_color (BGR), bbox_color (BGR)
+ROLE_CONFIG: dict[int, dict] = {
+    0: {
+        "label":          "BallCarrier",
+        "skeleton_color": (255, 255, 0),   # cyan
+        "keypoint_color": (200, 220, 0),
+        "bbox_color":     (200, 200, 0),
+    },
+    3: {
+        "label":          "Tackler",
+        "skeleton_color": (0, 0, 255),     # red
+        "keypoint_color": (50, 50, 255),
+        "bbox_color":     (0, 0, 200),
+    },
+}
+
 POSE_WEIGHTS       = "yolo11x-pose.pt"  # Best pose model < 5 GB (auto-downloads)
 POSE_CONF          = 0.25              # Pose detection confidence threshold
 ANNOTATION_MIN_IOU = 0.2              # Min IoU between annotation box and pose detection
@@ -110,9 +126,6 @@ COCO_SKELETON = [
     (5, 11), (6, 12), (11, 12),
     (11, 13), (13, 15), (12, 14), (14, 16),
 ]
-SKELETON_COLOR  = (0, 255, 0)
-KEYPOINT_COLOR  = (0, 200, 255)
-BBOX_COLOR      = (0, 165, 255)
 CODEC_CANDIDATES = ["avc1", "mp4v"]
 
 
@@ -631,6 +644,9 @@ def _best_pose_match(
 def _draw_skeleton(
     frame: np.ndarray,
     kpts: np.ndarray,
+    *,
+    skeleton_color: tuple[int, int, int] = (0, 255, 0),
+    keypoint_color: tuple[int, int, int] = (0, 200, 255),
     conf_thresh: float = 0.3,
 ) -> None:
     kp_px = [(int(x), int(y), float(c)) for x, y, c in kpts]
@@ -639,11 +655,11 @@ def _draw_skeleton(
         x2, y2, c2 = kp_px[i2]
         if c1 < conf_thresh or c2 < conf_thresh:
             continue
-        cv2.line(frame, (x1, y1), (x2, y2), SKELETON_COLOR, 2, lineType=cv2.LINE_AA)
+        cv2.line(frame, (x1, y1), (x2, y2), skeleton_color, 2, lineType=cv2.LINE_AA)
     for x, y, c in kp_px:
         if c < conf_thresh:
             continue
-        cv2.circle(frame, (x, y), 4, KEYPOINT_COLOR, -1, lineType=cv2.LINE_AA)
+        cv2.circle(frame, (x, y), 4, keypoint_color, -1, lineType=cv2.LINE_AA)
 
 
 # ── Video writer ──────────────────────────────────────────────────────────────
@@ -660,6 +676,22 @@ def _open_writer(path: Path, fps: float, width: int, height: int) -> cv2.VideoWr
 
 # ── Per-clip processing ───────────────────────────────────────────────────────
 
+def _draw_role_box(
+    frame: np.ndarray,
+    tbox: tuple[int, int, int, int],
+    label: str,
+    bbox_color: tuple[int, int, int],
+) -> None:
+    """Draw a labeled bounding box for a role (BallCarrier or Tackler)."""
+    x1, y1, x2, y2 = tbox
+    cv2.rectangle(frame, (x1, y1), (x2, y2), bbox_color, 2)
+    text_y = max(20, y1 - 8)
+    cv2.putText(
+        frame, label, (x1, text_y),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.65, bbox_color, 2, lineType=cv2.LINE_AA,
+    )
+
+
 def _process_clip(
     video_stem: str,
     frames: list[tuple[int, Path]],
@@ -671,27 +703,30 @@ def _process_clip(
     source_fps: float,
     conf: float,
     device: str | None,
-    class_id: int,
+    role_config: dict[int, dict],
     min_iou: float,
-) -> tuple[int, int, list[int], list[np.ndarray]]:
+) -> tuple[int, dict[int, tuple[list[int], list[np.ndarray]]]]:
     """
     Process one clip. Returns:
-      (total_frames, frames_with_pose, kpt_frame_indices, kpts_sequence)
-    kpts_sequence contains one (17, 3) array per successfully matched pose frame.
+      (total_frames, {class_id: (kpt_frame_indices, kpts_sequence)})
+
+    Pose estimation runs once per frame (when any role has annotation boxes).
+    Each role is drawn with its own color and label.
     """
     first_img = cv2.imread(str(frames[0][1]))
     if first_img is None:
         print(f"[skip] cannot read {frames[0][1]}", file=sys.stderr)
-        return 0, 0, [], []
+        return 0, {cid: ([], []) for cid in role_config}
     height, width = first_img.shape[:2]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     writer = _open_writer(output_path, output_fps, width, height)
 
     total = 0
-    with_pose = 0
-    kpt_frame_indices: list[int] = []
-    kpts_sequence: list[np.ndarray] = []
+    # Per-role keypoint accumulation
+    role_kpts: dict[int, tuple[list[int], list[np.ndarray]]] = {
+        cid: ([], []) for cid in role_config
+    }
 
     for fidx, img_path in frames:
         frame_bgr = cv2.imread(str(img_path))
@@ -699,13 +734,16 @@ def _process_clip(
             print(f"[skip] cannot read {img_path}", file=sys.stderr)
             continue
 
-        target_boxes: list[tuple[int, int, int, int]] = []
+        # Collect annotation boxes per role for this frame
+        role_boxes: dict[int, list[tuple[int, int, int, int]]] = {}
         if fidx in label_index:
-            target_boxes = _load_target_boxes(
-                label_index[fidx], class_id, width, height
-            )
+            for cid in role_config:
+                boxes = _load_target_boxes(label_index[fidx], cid, width, height)
+                if boxes:
+                    role_boxes[cid] = boxes
 
-        if target_boxes:
+        if role_boxes:
+            # Run pose estimation once for the whole frame
             kwargs: dict = {"conf": conf, "verbose": False}
             if device:
                 kwargs["device"] = device
@@ -722,21 +760,28 @@ def _process_clip(
                 else np.empty((0, 17, 3))
             )
 
-            for tbox in target_boxes:
-                cv2.rectangle(frame_bgr, (tbox[0], tbox[1]), (tbox[2], tbox[3]), BBOX_COLOR, 2)
-                kp = _best_pose_match(pose_boxes, pose_kpts, tbox, min_iou)
-                if kp is not None:
-                    _draw_skeleton(frame_bgr, kp)
-                    kpt_frame_indices.append(fidx)
-                    kpts_sequence.append(kp)
-
-            with_pose += 1
+            for cid, tboxes in role_boxes.items():
+                role = role_config[cid]
+                for tbox in tboxes:
+                    _draw_role_box(
+                        frame_bgr, tbox,
+                        role["label"], role["bbox_color"],
+                    )
+                    kp = _best_pose_match(pose_boxes, pose_kpts, tbox, min_iou)
+                    if kp is not None:
+                        _draw_skeleton(
+                            frame_bgr, kp,
+                            skeleton_color=role["skeleton_color"],
+                            keypoint_color=role["keypoint_color"],
+                        )
+                        role_kpts[cid][0].append(fidx)
+                        role_kpts[cid][1].append(kp)
 
         writer.write(frame_bgr)
         total += 1
 
     writer.release()
-    return total, with_pose, kpt_frame_indices, kpts_sequence
+    return total, role_kpts
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
@@ -749,7 +794,7 @@ def run_pose_pipeline(
     weights: str,
     conf: float,
     device: str | None,
-    class_id: int,
+    role_config: dict[int, dict],
     min_iou: float,
     output_fps: float,
     source_fps: float,
@@ -758,7 +803,9 @@ def run_pose_pipeline(
     if not clips:
         sys.exit(f"No recognisable image frames found in {frames_dir}")
 
+    role_names = ", ".join(r["label"] for r in role_config.values())
     print(f"Found {len(clips)} clip(s): {', '.join(sorted(clips))}")
+    print(f"Roles: {role_names}")
     model = YOLO(weights)
 
     for video_stem, frames in sorted(clips.items()):
@@ -768,32 +815,63 @@ def run_pose_pipeline(
 
         print(f"\n  {video_stem}  ({len(frames)} frames, {len(label_index)} annotated)")
 
-        total, with_pose, kpt_fidxs, kpts_seq = _process_clip(
+        total, role_kpts = _process_clip(
             video_stem, frames, label_index, out_video, model,
             output_fps=output_fps,
             source_fps=source_fps,
             conf=conf,
             device=device,
-            class_id=class_id,
+            role_config=role_config,
             min_iou=min_iou,
         )
 
-        print(f"  → {out_video.name}  ({with_pose}/{total} frames with pose overlay)")
+        # Count frames where at least one role had a pose match
+        frames_with_pose = len(set(
+            fidx
+            for fidxs, _ in role_kpts.values()
+            for fidx in fidxs
+        ))
+        print(f"  → {out_video.name}  ({frames_with_pose}/{total} frames with pose overlay)")
 
-        if kpts_seq:
-            diag = build_diagnostics(
-                video_stem, kpt_fidxs, kpts_seq,
-                frames_processed=total,
-                frames_with_pose=with_pose,
-                class_id=class_id,
-                source_fps=source_fps,
-            )
-            out_json.write_text(json.dumps(diag, indent=2))
-            n_flags = len(diag["injury_risk_summary"]["risk_flags"])
-            risk    = diag["injury_risk_summary"]["overall_risk_level"]
-            print(f"  → {out_json.name}  (risk: {risk}, {n_flags} flag(s))")
+        # Build per-role diagnostics, combined into one JSON
+        roles_diag: dict = {}
+        for cid, (kpt_fidxs, kpts_seq) in role_kpts.items():
+            role_label = role_config[cid]["label"]
+            if kpts_seq:
+                diag = build_diagnostics(
+                    video_stem, kpt_fidxs, kpts_seq,
+                    frames_processed=total,
+                    frames_with_pose=len(kpt_fidxs),
+                    class_id=cid,
+                    source_fps=source_fps,
+                )
+                roles_diag[role_label] = {
+                    "joint_kinematics": diag["joint_kinematics"],
+                    "joint_angles": diag["joint_angles"],
+                    "body_orientation": diag["body_orientation"],
+                    "injury_risk_summary": diag["injury_risk_summary"],
+                }
+                risk = diag["injury_risk_summary"]["overall_risk_level"]
+                n_flags = len(diag["injury_risk_summary"]["risk_flags"])
+                print(f"     {role_label}: {len(kpt_fidxs)} pose frames, risk={risk}, {n_flags} flag(s)")
+            else:
+                print(f"     {role_label}: no pose matches", file=sys.stderr)
+
+        if roles_diag:
+            combined = {
+                "clip": video_stem,
+                "metadata": {
+                    "frames_processed": total,
+                    "frames_with_pose": frames_with_pose,
+                    "roles": list(roles_diag.keys()),
+                    "source_fps_assumed": source_fps,
+                },
+                "roles": roles_diag,
+            }
+            out_json.write_text(json.dumps(combined, indent=2))
+            print(f"  → {out_json.name}")
         else:
-            print(f"  → no pose matches found; JSON skipped", file=sys.stderr)
+            print(f"  → no pose matches for any role; JSON skipped", file=sys.stderr)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -812,7 +890,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--conf",        type=float, default=POSE_CONF)
     p.add_argument("--device",      default=None,
                    help="Torch device: cpu, cuda:0, mps (default: auto)")
-    p.add_argument("--class-id",    type=int, default=POSE_CLASS_ID)
     p.add_argument("--min-iou",     type=float, default=ANNOTATION_MIN_IOU)
     p.add_argument("--output-fps",  type=float, default=OUTPUT_FPS,
                    help="FPS of the stitched output video")
@@ -830,7 +907,7 @@ def main(argv: list[str] | None = None) -> None:
         weights=args.weights,
         conf=args.conf,
         device=args.device,
-        class_id=args.class_id,
+        role_config=ROLE_CONFIG,
         min_iou=args.min_iou,
         output_fps=args.output_fps,
         source_fps=args.source_fps,
