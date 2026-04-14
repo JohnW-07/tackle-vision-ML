@@ -161,6 +161,7 @@
           "n_frames": 4
         }
       },
+      "head_rotation": {},
       "injury_risk_summary": {
         "overall_risk_level": "high",
         "risk_flags": [
@@ -413,6 +414,15 @@
           "mean_deg": 47.6,
           "min_deg": 47.6,
           "max_deg": 47.6,
+          "range_deg": 0.0,
+          "n_frames": 1
+        }
+      },
+      "head_rotation": {
+        "facing_angle_from_nose_shoulders_deg": {
+          "mean_deg": 165.8,
+          "min_deg": 165.8,
+          "max_deg": 165.8,
           "range_deg": 0.0,
           "n_frames": 1
         }

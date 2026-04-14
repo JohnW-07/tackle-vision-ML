@@ -161,6 +161,7 @@
           "n_frames": 5
         }
       },
+      "head_rotation": {},
       "injury_risk_summary": {
         "overall_risk_level": "high",
         "risk_flags": [
@@ -410,6 +411,7 @@
           "n_frames": 1
         }
       },
+      "head_rotation": {},
       "injury_risk_summary": {
         "overall_risk_level": "moderate",
         "risk_flags": [

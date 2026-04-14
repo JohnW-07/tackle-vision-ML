@@ -56,6 +56,8 @@ POSE_WEIGHTS       = "yolo11x-pose.pt"  # Best pose model < 5 GB (auto-downloads
 POSE_CONF          = 0.25              # Pose detection confidence threshold
 ANNOTATION_MIN_IOU = 0.2              # Min IoU between annotation box and pose detection
 OUTPUT_FPS         = 10.0             # FPS for stitched output video (frames are sparse)
+AUTO_OUTPUT_FPS_MIN = 3.0             # Lower clamp for auto-estimated output FPS
+AUTO_OUTPUT_FPS_MAX = 30.0            # Upper clamp for auto-estimated output FPS
 
 # Kinematics — edit SOURCE_FPS to match the original video frame rate.
 # Frames in raws/ are assumed to be consecutive frames (stride = 1).
@@ -95,6 +97,14 @@ JOINT_NAMES = [
     "left_knee", "right_knee",
     "left_ankle", "right_ankle",
 ]
+
+# Key joints to emphasize visually on top of each detected role box.
+HIGHLIGHT_JOINT_IDS: set[int] = {
+    5, 6,    # shoulders
+    7, 8,    # elbows
+    13, 14,  # knees
+    15, 16,  # ankles
+}
 
 # Joints included in kinematics and diagnostics.
 # Eyes, ears, and wrists are excluded — too small to track reliably at
@@ -331,6 +341,9 @@ def _compute_joint_angles(
     angle_frames: dict[str, list[float]] = defaultdict(list)
     neck_angles: list[float] = []
     spine_angles: list[float] = []
+    head_roll_angles: list[float] = []
+    head_yaw_proxy_values: list[float] = []
+    head_facing_angles: list[float] = []
 
     for kpts in kpts_sequence:
         # Named joint angles
@@ -360,6 +373,31 @@ def _compute_joint_angles(
             if a is not None:
                 spine_angles.append(a)
 
+        # Head roll and yaw proxies:
+        # - roll uses the eye-line angle from horizontal (requires both eyes)
+        # - yaw proxy uses nose offset from eye midpoint normalized by eye distance
+        le, re, no = kpts[1], kpts[2], kpts[0]
+        if le[2] >= conf_thresh and re[2] >= conf_thresh:
+            eye_dx = float(le[0] - re[0])
+            eye_dy = float(le[1] - re[1])
+            if abs(eye_dx) > 1e-6 or abs(eye_dy) > 1e-6:
+                head_roll_angles.append(float(np.degrees(np.arctan2(eye_dy, eye_dx))))
+            if no[2] >= conf_thresh:
+                eye_mid_x = 0.5 * (float(le[0]) + float(re[0]))
+                eye_dist = float(np.hypot(eye_dx, eye_dy))
+                if eye_dist > 1e-6:
+                    yaw_proxy = (float(no[0]) - eye_mid_x) / eye_dist
+                    head_yaw_proxy_values.append(yaw_proxy)
+
+        # Fallback facing angle when eye/ear detail is unreliable:
+        # use nose direction from mid-shoulder against image horizontal.
+        ls, rs = kpts[5], kpts[6]
+        if ls[2] >= conf_thresh and rs[2] >= conf_thresh and no[2] >= conf_thresh:
+            mid_sh = (ls[:2] + rs[:2]) / 2.0
+            vec = no[:2] - mid_sh
+            if np.linalg.norm(vec) > 1e-6:
+                head_facing_angles.append(float(np.degrees(np.arctan2(vec[1], vec[0]))))
+
     def _stats(vals: list[float]) -> dict | None:
         if not vals:
             return None
@@ -384,8 +422,22 @@ def _compute_joint_angles(
     s = _stats(spine_angles)
     if s:
         body_orient["spine_angle_from_vertical"] = s
+    head_rotation: dict = {}
+    s = _stats(head_roll_angles)
+    if s:
+        head_rotation["eye_line_roll_deg"] = s
+    s = _stats(head_yaw_proxy_values)
+    if s:
+        head_rotation["yaw_proxy_from_eyes"] = s
+    s = _stats(head_facing_angles)
+    if s:
+        head_rotation["facing_angle_from_nose_shoulders_deg"] = s
 
-    return {"joint_angles": result, "body_orientation": body_orient}
+    return {
+        "joint_angles": result,
+        "body_orientation": body_orient,
+        "head_rotation": head_rotation,
+    }
 
 
 # ── Risk flags ────────────────────────────────────────────────────────────────
@@ -539,6 +591,7 @@ def build_diagnostics(
         "joint_kinematics": kinematics,
         "joint_angles": angle_data.get("joint_angles", {}),
         "body_orientation": angle_data.get("body_orientation", {}),
+        "head_rotation": angle_data.get("head_rotation", {}),
         "injury_risk_summary": {
             "overall_risk_level": overall_risk,
             "risk_flags": risk_flags,
@@ -656,10 +709,11 @@ def _draw_skeleton(
         if c1 < conf_thresh or c2 < conf_thresh:
             continue
         cv2.line(frame, (x1, y1), (x2, y2), skeleton_color, 2, lineType=cv2.LINE_AA)
-    for x, y, c in kp_px:
+    for j, (x, y, c) in enumerate(kp_px):
         if c < conf_thresh:
             continue
-        cv2.circle(frame, (x, y), 4, keypoint_color, -1, lineType=cv2.LINE_AA)
+        radius = 6 if j in HIGHLIGHT_JOINT_IDS else 4
+        cv2.circle(frame, (x, y), radius, keypoint_color, -1, lineType=cv2.LINE_AA)
 
 
 # ── Video writer ──────────────────────────────────────────────────────────────
@@ -672,6 +726,36 @@ def _open_writer(path: Path, fps: float, width: int, height: int) -> cv2.VideoWr
             return writer
         writer.release()
     raise RuntimeError(f"Could not open VideoWriter for {path}")
+
+
+def _estimate_output_fps_for_clip(
+    frames: list[tuple[int, Path]],
+    source_fps: float,
+    fallback_fps: float,
+    *,
+    min_fps: float = AUTO_OUTPUT_FPS_MIN,
+    max_fps: float = AUTO_OUTPUT_FPS_MAX,
+) -> float:
+    """
+    Estimate stitched-video FPS from median frame-index gaps.
+    If extracted frames are sparse, this lowers playback FPS to avoid
+    unnaturally fast/choppy output. Falls back to configured value.
+    """
+    if len(frames) < 2:
+        return float(np.clip(fallback_fps, min_fps, max_fps))
+
+    frame_indices = np.array([fidx for fidx, _ in frames], dtype=np.int64)
+    gaps = np.diff(frame_indices)
+    valid_gaps = gaps[gaps > 0]
+    if len(valid_gaps) == 0:
+        return float(np.clip(fallback_fps, min_fps, max_fps))
+
+    median_gap = float(np.median(valid_gaps))
+    if median_gap <= 0:
+        return float(np.clip(fallback_fps, min_fps, max_fps))
+
+    estimated = float(source_fps / median_gap)
+    return float(np.clip(estimated, min_fps, max_fps))
 
 
 # ── Per-clip processing ───────────────────────────────────────────────────────
@@ -701,6 +785,7 @@ def _process_clip(
     *,
     output_fps: float,
     source_fps: float,
+    auto_output_fps: bool,
     conf: float,
     device: str | None,
     role_config: dict[int, dict],
@@ -719,8 +804,17 @@ def _process_clip(
         return 0, {cid: ([], []) for cid in role_config}
     height, width = first_img.shape[:2]
 
+    clip_output_fps = (
+        _estimate_output_fps_for_clip(
+            frames,
+            source_fps=source_fps,
+            fallback_fps=output_fps,
+        )
+        if auto_output_fps
+        else float(np.clip(output_fps, AUTO_OUTPUT_FPS_MIN, AUTO_OUTPUT_FPS_MAX))
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    writer = _open_writer(output_path, output_fps, width, height)
+    writer = _open_writer(output_path, clip_output_fps, width, height)
 
     total = 0
     # Per-role keypoint accumulation
@@ -781,6 +875,7 @@ def _process_clip(
         total += 1
 
     writer.release()
+    print(f"     stitched_fps={clip_output_fps:.2f}")
     return total, role_kpts
 
 
@@ -798,6 +893,7 @@ def run_pose_pipeline(
     min_iou: float,
     output_fps: float,
     source_fps: float,
+    auto_output_fps: bool,
 ) -> None:
     clips = _discover_clips(frames_dir)
     if not clips:
@@ -819,6 +915,7 @@ def run_pose_pipeline(
             video_stem, frames, label_index, out_video, model,
             output_fps=output_fps,
             source_fps=source_fps,
+            auto_output_fps=auto_output_fps,
             conf=conf,
             device=device,
             role_config=role_config,
@@ -849,6 +946,7 @@ def run_pose_pipeline(
                     "joint_kinematics": diag["joint_kinematics"],
                     "joint_angles": diag["joint_angles"],
                     "body_orientation": diag["body_orientation"],
+                    "head_rotation": diag.get("head_rotation", {}),
                     "injury_risk_summary": diag["injury_risk_summary"],
                 }
                 risk = diag["injury_risk_summary"]["overall_risk_level"]
@@ -895,6 +993,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="FPS of the stitched output video")
     p.add_argument("--source-fps",  type=float, default=SOURCE_FPS,
                    help="Original capture frame rate (used for kinematics)")
+    p.add_argument(
+        "--no-auto-output-fps",
+        action="store_true",
+        help="Disable per-clip auto FPS estimation and use --output-fps directly",
+    )
     return p.parse_args(argv)
 
 
@@ -911,6 +1014,7 @@ def main(argv: list[str] | None = None) -> None:
         min_iou=args.min_iou,
         output_fps=args.output_fps,
         source_fps=args.source_fps,
+        auto_output_fps=not args.no_auto_output_fps,
     )
 
 
