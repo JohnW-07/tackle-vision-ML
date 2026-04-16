@@ -5,6 +5,8 @@ __pycache__/
 
 # Data files
 *.mp4
+raws/
+finals/two_players/
 
 # Models
 *.pth
