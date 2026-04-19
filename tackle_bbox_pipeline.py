@@ -46,6 +46,8 @@ DEFAULT_WEIGHTS = "yolo11n.pt"
 #TOP_MOTION_POSE_MODEL = "yolo11x-pose.pt"
 TOP_MOTION_POSE_MODEL = "yolo26x-pose.pt"
 #TOP_MOTION_POSE_MODEL = "yolo11n-pose.pt"
+#TOP_MOTION_POSE_MODEL = "yolo11n.pt"
+
 ANNOTATE_POSE_MODEL_NAME = True
 
 DEFAULT_POSE_WEIGHTS = TOP_MOTION_POSE_MODEL
@@ -1101,8 +1103,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def _default_output_for(input_path: Path, *, mode: str, output_dir: Path | None = None) -> Path:
-    suffix = "_top_motion.mp4" if mode == "top_motion" else "_tackler_box.mp4"
+def _filename_tag(value: str) -> str:
+    tag = "".join(
+        ch if ch.isalnum() or ch in {"-", "_", "."} else "_"
+        for ch in value.strip()
+    ).strip("._-")
+    return tag or "unknown"
+
+
+def _effective_pose_weights(args: argparse.Namespace) -> str | None:
+    if args.no_pose:
+        return None
+    pws = (args.pose_weights or "").strip()
+    return pws if pws else None
+
+
+def _default_output_for(
+    input_path: Path,
+    *,
+    mode: str,
+    output_dir: Path | None = None,
+    pose_weights: str | None = None,
+) -> Path:
+    if mode == "top_motion":
+        pose_tag = (
+            _filename_tag(Path(str(pose_weights)).stem)
+            if pose_weights
+            else "no_pose"
+        )
+        suffix = f"_top_motion_{pose_tag}.mp4"
+    else:
+        suffix = "_tackler_box.mp4"
     name = f"{input_path.stem}{suffix}"
     return (output_dir / name) if output_dir is not None else input_path.with_name(name)
 
@@ -1118,11 +1149,7 @@ def _run_one_video(args: argparse.Namespace, inp: Path, out: Path) -> None:
             device=args.device,
         )
     elif args.mode == "top_motion":
-        if args.no_pose:
-            pw = None
-        else:
-            pws = (args.pose_weights or "").strip()
-            pw = pws if pws else None
+        pw = _effective_pose_weights(args)
         run_top_motion_carrier_tackler_pipeline(
             inp,
             out,
@@ -1167,8 +1194,16 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Found {len(videos)} video(s) in {input_dir}")
         print(f"Output directory: {output_dir}")
         failures = 0
+        pose_weights = (
+            _effective_pose_weights(args) if args.mode == "top_motion" else None
+        )
         for idx, inp in enumerate(videos, start=1):
-            out = _default_output_for(inp, mode=args.mode, output_dir=output_dir)
+            out = _default_output_for(
+                inp,
+                mode=args.mode,
+                output_dir=output_dir,
+                pose_weights=pose_weights,
+            )
             print(f"\n[{idx}/{len(videos)}] {inp.name} -> {out.name}")
             try:
                 _run_one_video(args, inp, out)
@@ -1186,7 +1221,13 @@ def main(argv: list[str] | None = None) -> None:
     if not inp.is_file():
         sys.exit(f"Input not found: {inp}")
     out = (
-        _default_output_for(inp, mode=args.mode)
+        _default_output_for(
+            inp,
+            mode=args.mode,
+            pose_weights=(
+                _effective_pose_weights(args) if args.mode == "top_motion" else None
+            ),
+        )
         if args.output is None
         else args.output.expanduser().resolve()
     )

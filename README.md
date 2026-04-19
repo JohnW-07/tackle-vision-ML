@@ -53,6 +53,6 @@ python3 -m pip install -e .
 - **stack**: `yolo11n.pt` + `yolo11n-pose.pt` only (no yolo26, no separate “legacy” mode)
 - **top_motion**: buffer clip → one track pass → keep2 highest-motion person tracks → ball near upper body → carrier vs tackler → draw boxes + skeleton + head text
 - **other modes**: `heuristic` (streaming tackler-ish box), `trained` (your `best.pt`)
-- **outputs**: default `*_top_motion.mp4` next to input; batch vids often dropped in `finals/two_players/`
+- **outputs**: default `*_top_motion_<pose-model>.mp4` next to input; batch vids often dropped in `finals/two_players/`
 - **tradeoffs**: nano = fast/light, misses more than bigger weights; long clips capped ~4500 frames in code
 - **removed**: yolo26 default, yolov8n+yolo11 compare run, interpolation experiment (reverted), `_top_motion_legacy` suffix
