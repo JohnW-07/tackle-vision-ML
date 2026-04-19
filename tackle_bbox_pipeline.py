@@ -388,6 +388,133 @@ def _ball_hands_association_score(person_xyxy: np.ndarray, ball_xyxy: np.ndarray
     return float(max(iou_upper, iou_full * 0.85) + (0.15 if inside else 0.0))
 
 
+def _football_appearance_score(
+    frame_bgr: np.ndarray,
+    ball_xyxy: np.ndarray,
+    person_xyxy: np.ndarray,
+    frame_diag: float,
+    det_conf: float,
+) -> float:
+    """
+    Score detections by football-like cues to reject cone false positives.
+    Prefers small, oval, brown-ish objects near players.
+    """
+    h_img, w_img = frame_bgr.shape[:2]
+    x1, y1, x2, y2 = [int(v) for v in ball_xyxy]
+    x1 = max(0, min(w_img - 1, x1))
+    y1 = max(0, min(h_img - 1, y1))
+    x2 = max(0, min(w_img, x2))
+    y2 = max(0, min(h_img, y2))
+    bw = max(1, x2 - x1)
+    bh = max(1, y2 - y1)
+    roi = frame_bgr[y1:y2, x1:x2]
+    if roi.size == 0:
+        return -1.0
+
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    h = hsv[:, :, 0].astype(np.float32)
+    s = hsv[:, :, 1].astype(np.float32)
+    v = hsv[:, :, 2].astype(np.float32)
+    mean_h = float(np.mean(h))
+    mean_s = float(np.mean(s))
+    mean_v = float(np.mean(v))
+
+    # Hard color gate: football should be mostly brown, not vivid orange/neon.
+    brown_mask = (
+        (h >= 7.0) & (h <= 20.0) &
+        (s >= 45.0) & (s <= 185.0) &
+        (v >= 22.0) & (v <= 150.0)
+    )
+    orange_mask = (
+        (h >= 8.0) & (h <= 24.0) &
+        (s >= 130.0) & (v >= 135.0)
+    )
+    brown_ratio = float(np.mean(brown_mask))
+    orange_ratio = float(np.mean(orange_mask))
+    if brown_ratio < 0.30 or orange_ratio > 0.10:
+        return -1.0
+
+    # Brown footballs are darker and less saturated than bright orange cones.
+    hue_score = float(np.exp(-((mean_h - 14.0) ** 2) / (2.0 * (8.0 ** 2))))
+    sat_score = float(np.exp(-((mean_s - 105.0) ** 2) / (2.0 * (50.0 ** 2))))
+    val_score = float(np.exp(-((mean_v - 78.0) ** 2) / (2.0 * (30.0 ** 2))))
+    color_score = 0.40 * hue_score + 0.20 * sat_score + 0.20 * val_score + 0.20 * brown_ratio
+
+    aspect = bw / float(bh)
+    shape_score = max(
+        float(np.exp(-((aspect - 1.65) ** 2) / (2.0 * (0.45 ** 2)))),
+        float(np.exp(-((aspect - 0.62) ** 2) / (2.0 * (0.18 ** 2)))),
+    )
+    area_frac = (bw * bh) / float(max(1, w_img * h_img))
+    size_score = float(np.exp(-((area_frac - 0.0008) ** 2) / (2.0 * (0.0007 ** 2))))
+
+    prox_score = 0.0
+    hands_score = 0.0
+    b_center = _box_center(ball_xyxy)
+    if len(person_xyxy) > 0:
+        min_norm_d = 1.0
+        best_hands_assoc = 0.0
+        for p in person_xyxy:
+            p_center = _box_center(p)
+            d = float(np.linalg.norm(b_center - p_center)) / (frame_diag + 1e-6)
+            if d < min_norm_d:
+                min_norm_d = d
+            best_hands_assoc = max(
+                best_hands_assoc,
+                _ball_hands_association_score(p.astype(np.float64), ball_xyxy.astype(np.float64)),
+            )
+        prox_score = float(np.exp(-((min_norm_d - 0.10) ** 2) / (2.0 * (0.18 ** 2))))
+        # 0.15+ typically means ball is plausibly on/near torso-upper-body (hands proxy).
+        hands_score = float(np.clip(best_hands_assoc / 0.35, 0.0, 1.0))
+
+        # Hard gate for hand-carry prior: reject detections far from any player's carry zone.
+        if best_hands_assoc < 0.07 and min_norm_d > 0.23:
+            return -1.0
+
+    score = (
+        0.14 * float(det_conf)
+        + 0.34 * color_score
+        + 0.16 * shape_score
+        + 0.08 * size_score
+        + 0.10 * prox_score
+        + 0.30 * hands_score
+    )
+
+    # Strongly down-rank cone-like bright orange candidates.
+    cone_like = 8.0 <= mean_h <= 24.0 and mean_s >= 115.0 and mean_v >= 120.0
+    if cone_like:
+        score -= 0.22
+    return score
+
+
+def _pick_best_football_box(
+    frame_bgr: np.ndarray,
+    ball_xyxy: np.ndarray,
+    ball_confs: np.ndarray,
+    person_xyxy: np.ndarray,
+    frame_diag: float,
+    min_score: float = 0.42,
+) -> np.ndarray | None:
+    if len(ball_xyxy) == 0:
+        return None
+    best_idx: int | None = None
+    best_score = min_score
+    for i, box in enumerate(ball_xyxy):
+        s = _football_appearance_score(
+            frame_bgr,
+            box.astype(np.float64),
+            person_xyxy.astype(np.float64),
+            frame_diag,
+            float(ball_confs[i]),
+        )
+        if s > best_score:
+            best_score = s
+            best_idx = i
+    if best_idx is None:
+        return None
+    return ball_xyxy[best_idx]
+
+
 def _best_pose_keypoints_for_box(
     pose_boxes: np.ndarray,
     pose_kpts: np.ndarray,
@@ -465,7 +592,7 @@ def run_top_motion_carrier_tackler_pipeline(
     device: str | None,
     max_frames: int = 4500,
     pose_weights: str | None = DEFAULT_POSE_WEIGHTS,
-    pose_conf: float = 0.25,
+    pose_conf: float = 0.18,
 ) -> None:
     """
     Two-stage pipeline on a single tracking pass (frames buffered):
@@ -532,7 +659,14 @@ def run_top_motion_carrier_tackler_pipeline(
                 rec["person_ids"] = person_ids
                 rec["person_xyxy"] = person_xyxy
                 rec["person_confs"] = person_confs
-                rec["balls"] = [row.copy() for row in ball_xyxy]
+                best_ball_box = _pick_best_football_box(
+                    frame_bgr,
+                    ball_xyxy,
+                    confs_all[ball_mask],
+                    person_xyxy,
+                    frame_diag,
+                )
+                rec["balls"] = [best_ball_box.copy()] if best_ball_box is not None else []
 
                 for tid, box in zip(person_ids, person_xyxy, strict=True):
                     tid_i = int(tid)
@@ -799,8 +933,13 @@ def run_pipeline(
                 c = _box_center(box)
                 history[tid].append((float(c[0]), float(c[1])))
 
-            best_ball_idx = _safe_argmax(ball_confs)
-            best_ball_box = ball_xyxy[best_ball_idx] if best_ball_idx is not None else None
+            best_ball_box = _pick_best_football_box(
+                frame_bgr,
+                ball_xyxy,
+                ball_confs,
+                person_xyxy,
+                frame_diag,
+            )
 
             tid_to_idx = {int(t): i for i, t in enumerate(person_ids)}
 
@@ -958,8 +1097,13 @@ def run_trained_tackler_pipeline(
                 c = _box_center(box)
                 history[tid].append((float(c[0]), float(c[1])))
 
-            best_ball_idx = _safe_argmax(ball_confs)
-            best_ball_box = ball_xyxy[best_ball_idx] if best_ball_idx is not None else None
+            best_ball_box = _pick_best_football_box(
+                frame_bgr,
+                ball_xyxy,
+                ball_confs,
+                person_xyxy,
+                frame_diag,
+            )
             tid_to_idx = {int(t): i for i, t in enumerate(person_ids)}
 
             if locked_carrier_tid is None:
@@ -1092,7 +1236,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--pose-conf",
         type=float,
-        default=0.25,
+        default=0.18,
         help="Keypoint confidence threshold for drawing pose in top_motion",
     )
     p.add_argument(
