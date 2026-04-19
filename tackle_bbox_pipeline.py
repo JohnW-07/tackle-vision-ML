@@ -10,6 +10,7 @@ Trained mode: fine-tuned single-class `tackler` weights (see train_tackler_detec
 
 Examples:
   python tackle_bbox_pipeline.py path/to/clip.mp4 -o out_with_box.mp4
+  python tackle_bbox_pipeline.py --all
   python tackle_bbox_pipeline.py clip.mp4 --mode trained --weights runs/detect/tackler/weights/best.pt
 """
 from __future__ import annotations
@@ -32,10 +33,22 @@ except ImportError as e:  # pragma: no cover
 
 
 CODEC_CANDIDATES = ["avc1", "mp4v"]
+PROJECT_ROOT = Path(__file__).resolve().parent
+VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm", ".wmv"}
+DEFAULT_ALL_INPUT_DIR = PROJECT_ROOT / "raws"
+DEFAULT_ALL_OUTPUT_DIR = PROJECT_ROOT / "finals" / "two_players"
 PERSON_CLASS_ID = 0
 BALL_CLASS_ID = 32  # COCO sports ball
 DEFAULT_WEIGHTS = "yolo11n.pt"
-DEFAULT_POSE_WEIGHTS = "yolo11n-pose.pt"
+
+# Easy hot-swap for the pose model used by --mode top_motion.
+# Example alternatives:
+#TOP_MOTION_POSE_MODEL = "yolo11x-pose.pt"
+TOP_MOTION_POSE_MODEL = "yolo26x-pose.pt"
+#TOP_MOTION_POSE_MODEL = "yolo11n-pose.pt"
+ANNOTATE_POSE_MODEL_NAME = True
+
+DEFAULT_POSE_WEIGHTS = TOP_MOTION_POSE_MODEL
 POSE_MATCH_MIN_IOU = 0.15
 # Nose + shoulders, elbows, knees, ankles (main limbs); eyes/ears drawn when confident.
 POSE_HIGHLIGHT_JOINTS: set[int] = {0, 5, 6, 7, 8, 13, 14, 15, 16}
@@ -583,7 +596,14 @@ def run_top_motion_carrier_tackler_pipeline(
 
     pose_model: YOLO | None = None
     if pose_weights:
-        pose_model = YOLO(pose_weights)
+        try:
+            pose_model = YOLO(pose_weights)
+        except FileNotFoundError as e:
+            raise SystemExit(
+                "Pose model file not found: "
+                f"{pose_weights}. Put the weights file at that path, set "
+                "TOP_MOTION_POSE_MODEL to an available model, or run with --no-pose."
+            ) from e
 
     try:
         for frame_bgr, rec in zip(frames, frame_records, strict=True):
@@ -661,6 +681,29 @@ def run_top_motion_carrier_tackler_pipeline(
                                 1,
                                 lineType=cv2.LINE_AA,
                             )
+
+            if pose_model is not None and ANNOTATE_POSE_MODEL_NAME:
+                pose_label = f"pose model: {Path(str(pose_weights)).name}"
+                cv2.putText(
+                    frame_bgr,
+                    pose_label[:80],
+                    (16, 28),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (255, 255, 255),
+                    2,
+                    lineType=cv2.LINE_AA,
+                )
+                cv2.putText(
+                    frame_bgr,
+                    pose_label[:80],
+                    (16, 28),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (20, 20, 20),
+                    1,
+                    lineType=cv2.LINE_AA,
+                )
 
             writer.write(frame_bgr)
     finally:
@@ -994,20 +1037,39 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Overlay a tackler bounding box on football tackle video "
         "(COCO person + heuristic, or fine-tuned tackler detector)."
     )
-    p.add_argument("input", type=Path, help="Input video path (.mp4, .mov, ...)")
+    p.add_argument(
+        "input",
+        nargs="?",
+        type=Path,
+        help="Input video path (.mp4, .mov, ...). Optional when --all is used.",
+    )
+    p.add_argument(
+        "--all",
+        action="store_true",
+        help="Process all videos in the input directory (default: raws/).",
+    )
+    p.add_argument(
+        "--input-dir",
+        type=Path,
+        default=DEFAULT_ALL_INPUT_DIR,
+        help="Directory to scan when --all is used (default: raws/).",
+    )
     p.add_argument(
         "--mode",
         choices=("heuristic", "trained", "top_motion"),
-        default="heuristic",
+        default=None,
         help="heuristic: ball+carrier+tackler (streaming); trained: single-class tackler; "
-        "top_motion: two highest-motion tracks + ball-in-hands carrier (YOLO11n + yolo11n-pose)",
+        "top_motion: two highest-motion tracks + ball-in-hands carrier (default with --all)",
     )
     p.add_argument(
         "-o",
         "--output",
         type=Path,
         default=None,
-        help="Output video path (default: <input_stem>_tackler_box.mp4)",
+        help=(
+            "Output video path for one input, or output directory with --all "
+            "(default with --all: finals/two_players/)."
+        ),
     )
     p.add_argument(
         "--weights",
@@ -1039,20 +1101,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> None:
-    args = parse_args(argv)
-    inp = args.input.expanduser().resolve()
-    if not inp.is_file():
-        sys.exit(f"Input not found: {inp}")
-    out = args.output
-    if out is None:
-        if args.mode == "top_motion":
-            out = inp.with_name(f"{inp.stem}_top_motion.mp4")
-        else:
-            out = inp.with_name(f"{inp.stem}_tackler_box.mp4")
-    else:
-        out = out.expanduser().resolve()
+def _default_output_for(input_path: Path, *, mode: str, output_dir: Path | None = None) -> Path:
+    suffix = "_top_motion.mp4" if mode == "top_motion" else "_tackler_box.mp4"
+    name = f"{input_path.stem}{suffix}"
+    return (output_dir / name) if output_dir is not None else input_path.with_name(name)
 
+
+def _run_one_video(args: argparse.Namespace, inp: Path, out: Path) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
     if args.mode == "trained":
         run_trained_tackler_pipeline(
             inp,
@@ -1084,6 +1140,57 @@ def main(argv: list[str] | None = None) -> None:
             conf=args.conf,
             device=args.device,
         )
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    args.mode = args.mode or ("top_motion" if args.all else "heuristic")
+    if args.all:
+        input_dir = args.input_dir.expanduser().resolve()
+        if not input_dir.is_dir():
+            sys.exit(f"Input directory not found: {input_dir}")
+
+        videos = sorted(
+            p for p in input_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in VIDEO_SUFFIXES
+        )
+        if not videos:
+            supported = ", ".join(sorted(VIDEO_SUFFIXES))
+            sys.exit(f"No videos found in {input_dir} (supported: {supported})")
+
+        output_dir = (
+            args.output.expanduser().resolve()
+            if args.output is not None
+            else DEFAULT_ALL_OUTPUT_DIR
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Found {len(videos)} video(s) in {input_dir}")
+        print(f"Output directory: {output_dir}")
+        failures = 0
+        for idx, inp in enumerate(videos, start=1):
+            out = _default_output_for(inp, mode=args.mode, output_dir=output_dir)
+            print(f"\n[{idx}/{len(videos)}] {inp.name} -> {out.name}")
+            try:
+                _run_one_video(args, inp, out)
+            except Exception as e:
+                failures += 1
+                print(f"  [ERROR] {inp.name}: {e}", file=sys.stderr)
+        if failures:
+            sys.exit(f"Completed with {failures} failed video(s). See errors above.")
+        return
+
+    if args.input is None:
+        sys.exit("Input video is required unless --all is used.")
+
+    inp = args.input.expanduser().resolve()
+    if not inp.is_file():
+        sys.exit(f"Input not found: {inp}")
+    out = (
+        _default_output_for(inp, mode=args.mode)
+        if args.output is None
+        else args.output.expanduser().resolve()
+    )
+    _run_one_video(args, inp, out)
 
 
 if __name__ == "__main__":
