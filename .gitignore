@@ -1,27 +1,41 @@
+# OS / local app state
+.DS_Store
+.claude/
+Ultralytics/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
 *$py.class
 
-# Data files
+# Local video/data artifacts
+raws/
+upsampled/
+augmented/
+finals/
+clips/
 *.mp4
-raws/*
-finals/two_players/
+*.mov
+*.m4v
+*.mkv
+*.avi
+*.webm
+*.wmv
 
-# Models
+# Model weights / local repos
+*.pt
 *.pth
-*.txt
-# YOLO training runs + exported frame/label blobs (keep dataset/data.yaml)
+SeedVR/
+seedvr2_videoupscaler/
+models/SEEDVR2/
+
+# YOLO training outputs + exported dataset blobs (keep dataset/data.yaml)
 runs/
 dataset/images/
 dataset/labels/
 
-#dont include clips dir
-clips/
-
 # C extensions
 *.so
-*.pt
 
 # Distribution / packaging
 .Python
@@ -217,8 +231,6 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
-
-.claude/
 
 # Marimo
 marimo/_static/
