@@ -15,9 +15,11 @@ python3 tackle_bbox_pipeline.py --all --input-dir raws --output finals/two_playe
 ```
 
 `top_motion` buffers up to 4500 frames, runs one YOLO tracking pass, keeps the
-two highest-motion person tracks, uses football detections near the upper body to
-choose the ball carrier, then labels the other player as tackler. It draws the
-ball carrier, tackler, football, pose skeletons, and head-orientation text.
+two highest-motion person tracks, then scores whole-clip football possession
+between those two players. The player with the stronger possession evidence over
+the full clip is labeled `Ball Carrier`, and the other is labeled `Tackler` for
+the entire video. Football drawing uses detections near the upper body and falls
+back to a carrier-box search / estimate when the tiny ball drops out.
 
 Defaults:
 
@@ -32,6 +34,7 @@ Useful variants:
 ```bash
 python3 tackle_bbox_pipeline.py raws/clip.mp4 --mode top_motion --pose-weights yolo11n-pose.pt
 python3 tackle_bbox_pipeline.py raws/clip.mp4 --mode top_motion --no-pose
+python3 tackle_bbox_pipeline.py raws/clip.mp4 --mode top_motion --ball-conf 0.12
 python3 tackle_bbox_pipeline.py raws/clip.mp4 --mode heuristic
 python3 tackle_bbox_pipeline.py raws/clip.mp4 --mode trained --weights runs/detect/tackler/weights/best.pt
 ```

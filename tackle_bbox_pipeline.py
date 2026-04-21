@@ -39,7 +39,9 @@ DEFAULT_ALL_INPUT_DIR = PROJECT_ROOT / "raws"
 DEFAULT_ALL_OUTPUT_DIR = PROJECT_ROOT / "finals" / "two_players"
 PERSON_CLASS_ID = 0
 BALL_CLASS_ID = 32  # COCO sports ball
-DEFAULT_WEIGHTS = "yolo11n.pt"
+#DEFAULT_WEIGHTS = "yolo11n.pt"
+DEFAULT_WEIGHTS = "yolo26x.pt"
+DEFAULT_BALL_CONF = 0.15
 
 # Easy hot-swap for the pose model used by --mode top_motion.
 # Example alternatives:
@@ -61,6 +63,20 @@ COCO_SKELETON_POSE: list[tuple[int, int]] = [
     (5, 11), (6, 12), (11, 12),
     (11, 13), (13, 15), (12, 14), (14, 16),
 ]
+
+# ---------------------------------------------------------------------------
+# Probabilistic ball tracker — tuning constants
+# ---------------------------------------------------------------------------
+BALL_TRACK_MAX_MISS = 10          # frames before track declared lost
+BALL_TRACK_MIN_MATCH_SCORE = 0.24 # score threshold to update an active track
+BALL_TRACK_REACQUIRE_SCORE = 0.30 # higher threshold to re-init from lost state
+BALL_TRACK_HANDOFF_WINDOW = 8     # frames of widened tolerance after handoff detected
+BALL_TRACK_VEL_ALPHA = 0.35       # EMA weight for velocity update
+BALL_TRACK_SIZE_ALPHA = 0.25      # EMA weight for box size update
+BALL_TRACK_TEMPORAL_WEIGHT = 0.42 # weight of prediction-consistency term
+BALL_TRACK_CHEST_WEIGHT = 0.28    # weight of soft player-chest prior term
+BALL_TRACK_APPEARANCE_WEIGHT = 0.24  # weight of appearance (color/shape) term
+BALL_TRACK_OWNER_WEIGHT = 0.12    # bonus for matching previously known owner
 
 
 def _open_writer(path: Path, fps: float, width: int, height: int) -> cv2.VideoWriter:
@@ -245,6 +261,194 @@ def _distance(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.linalg.norm(a - b))
 
 
+def _estimate_ball_box_from_carrier(person_xyxy: np.ndarray) -> np.ndarray:
+    """
+    Fallback football box anchored to the carrier's torso/hips.
+    This keeps the label visible when the detector drops the tiny football.
+    """
+    x1, y1, x2, y2 = [float(v) for v in person_xyxy]
+    w = max(1.0, x2 - x1)
+    h = max(1.0, y2 - y1)
+    bw = max(10.0, min(0.30 * w, 0.18 * h))
+    bh = max(8.0, bw / 1.55)
+    cx = x1 + 0.58 * w
+    cy = y1 + 0.56 * h
+    return np.array(
+        [cx - bw / 2.0, cy - bh / 2.0, cx + bw / 2.0, cy + bh / 2.0],
+        dtype=np.float64,
+    )
+
+
+def _detect_ball_from_carrier_roi(
+    frame_bgr: np.ndarray,
+    person_xyxy: np.ndarray,
+) -> np.ndarray | None:
+    """
+    Detect a brown football-like blob inside the carrier box when YOLO misses it.
+    Works as a fallback for low-res youth-football footage.
+    """
+    h_img, w_img = frame_bgr.shape[:2]
+    x1, y1, x2, y2 = [int(round(v)) for v in person_xyxy]
+    x1 = max(0, min(w_img - 1, x1))
+    y1 = max(0, min(h_img - 1, y1))
+    x2 = max(x1 + 1, min(w_img, x2))
+    y2 = max(y1 + 1, min(h_img, y2))
+    roi = frame_bgr[y1:y2, x1:x2]
+    if roi.size == 0:
+        return None
+
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    warm_mask = cv2.inRange(hsv, np.array([5, 35, 20], dtype=np.uint8), np.array([24, 230, 220], dtype=np.uint8))
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    warm_mask = cv2.morphologyEx(warm_mask, cv2.MORPH_OPEN, kernel)
+    warm_mask = cv2.morphologyEx(warm_mask, cv2.MORPH_CLOSE, kernel)
+
+    contours, _ = cv2.findContours(warm_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    roi_h, roi_w = roi.shape[:2]
+    expected = np.array([0.58 * roi_w, 0.56 * roi_h], dtype=np.float64)
+    best_box: np.ndarray | None = None
+    best_score = -1.0
+
+    for cnt in contours:
+        bx, by, bw, bh = cv2.boundingRect(cnt)
+        area = float(bw * bh)
+        if area < 0.0025 * roi_w * roi_h or area > 0.11 * roi_w * roi_h:
+            continue
+        aspect = bw / float(max(1, bh))
+        if not (0.55 <= aspect <= 2.4):
+            continue
+        center = np.array([bx + bw / 2.0, by + bh / 2.0], dtype=np.float64)
+        dist = float(np.linalg.norm(center - expected)) / (np.hypot(roi_w, roi_h) + 1e-6)
+        fill = float(cv2.contourArea(cnt)) / area
+        score = 0.45 * fill + 0.30 * min(aspect, 1.8) / 1.8 + 0.25 * max(0.0, 1.0 - 2.2 * dist)
+        if score > best_score:
+            best_score = score
+            best_box = np.array([x1 + bx, y1 + by, x1 + bx + bw, y1 + by + bh], dtype=np.float64)
+
+    if best_score < 0.36:
+        return None
+    return best_box
+
+
+def _player_ball_possession_score(
+    frame_bgr: np.ndarray,
+    player_xyxy: np.ndarray,
+    ball_xyxy: np.ndarray,
+    ball_confs: np.ndarray,
+    frame_diag: float,
+) -> tuple[float, np.ndarray | None, str | None]:
+    """
+    Score how likely this player is holding the football on this frame.
+    Uses either a YOLO ball detection near the hands/torso or a carrier-ROI blob.
+    """
+    player_box = player_xyxy.astype(np.float64)
+    player_arr = player_box.reshape(1, 4)
+    best_score = 0.0
+    best_box: np.ndarray | None = None
+    best_source: str | None = None
+
+    for i, ball in enumerate(ball_xyxy):
+        ball_box = ball.astype(np.float64)
+        assoc = _ball_hands_association_score(player_box, ball_box)
+        if assoc < 0.035:
+            continue
+        app = _football_appearance_score(
+            frame_bgr,
+            ball_box,
+            player_arr,
+            frame_diag,
+            float(ball_confs[i]),
+        )
+        app_score = float(np.clip(app, 0.0, 1.0)) if app >= 0.0 else 0.0
+        assoc_score = float(np.clip(assoc / 0.35, 0.0, 1.0))
+        det_score = 0.66 * assoc_score + 0.22 * app_score + 0.12 * float(ball_confs[i])
+        if det_score > best_score:
+            best_score = det_score
+            best_box = ball_box
+            best_source = "det"
+
+    roi_box = _detect_ball_from_carrier_roi(frame_bgr, player_box)
+    if roi_box is not None:
+        roi_assoc = _ball_hands_association_score(player_box, roi_box)
+        roi_score = 0.52 + 0.48 * float(np.clip(roi_assoc / 0.35, 0.0, 1.0))
+        if roi_score > best_score:
+            best_score = roi_score
+            best_box = roi_box
+            best_source = "roi"
+
+    return best_score, best_box, best_source
+
+
+def _choose_ballcarrier_from_possession(
+    frames: list[np.ndarray],
+    frame_records: list[dict],
+    tid_a: int,
+    tid_b: int,
+    frame_diag: float,
+) -> tuple[int, int, dict[int, dict[str, float]]]:
+    """
+    Decide carrier/tackler over the whole clip by comparing per-frame possession
+    evidence for the two highest-motion tracks.
+    """
+    stats: dict[int, dict[str, float]] = {
+        tid_a: {"score_sum": 0.0, "wins": 0.0, "strong_wins": 0.0, "evidence_frames": 0.0},
+        tid_b: {"score_sum": 0.0, "wins": 0.0, "strong_wins": 0.0, "evidence_frames": 0.0},
+    }
+
+    for frame_bgr, rec in zip(frames, frame_records, strict=True):
+        pids = rec["person_ids"]
+        if len(pids) == 0:
+            continue
+        pxy = rec["person_xyxy"]
+        tid_to_i = {int(t): i for i, t in enumerate(pids)}
+        frame_scores: dict[int, float] = {tid_a: 0.0, tid_b: 0.0}
+
+        for tid in (tid_a, tid_b):
+            if tid not in tid_to_i:
+                continue
+            score, _, _ = _player_ball_possession_score(
+                frame_bgr,
+                pxy[tid_to_i[tid]],
+                rec["ball_xyxy"],
+                rec["ball_confs"],
+                frame_diag,
+            )
+            frame_scores[tid] = score
+            stats[tid]["score_sum"] += score
+            if score >= 0.45:
+                stats[tid]["evidence_frames"] += 1.0
+
+        sa = frame_scores[tid_a]
+        sb = frame_scores[tid_b]
+        best = max(sa, sb)
+        margin = abs(sa - sb)
+        if best < 0.45 or margin < 0.08:
+            continue
+        winner = tid_a if sa > sb else tid_b
+        stats[winner]["wins"] += 1.0
+        if margin >= 0.18:
+            stats[winner]["strong_wins"] += 1.0
+
+    key_a = (
+        stats[tid_a]["wins"],
+        stats[tid_a]["strong_wins"],
+        stats[tid_a]["score_sum"],
+        stats[tid_a]["evidence_frames"],
+    )
+    key_b = (
+        stats[tid_b]["wins"],
+        stats[tid_b]["strong_wins"],
+        stats[tid_b]["score_sum"],
+        stats[tid_b]["evidence_frames"],
+    )
+    if key_a >= key_b:
+        return tid_a, tid_b, stats
+    return tid_b, tid_a, stats
+
+
 def pick_active_interaction_pair(
     xyxy: np.ndarray,
     track_ids: np.ndarray,
@@ -370,10 +574,10 @@ def pick_tackler_idx_against_carrier(
 
 
 def _upper_body_xyxy(xyxy: np.ndarray) -> np.ndarray:
-    """Upper ~55% of the person box (torso / hands region proxy)."""
+    """Upper ~70% of the person box (torso / hands region proxy)."""
     x1, y1, x2, y2 = [float(v) for v in xyxy]
     h = max(1.0, y2 - y1)
-    y_split = y1 + 0.45 * h
+    y_split = y1 + 0.70 * h
     return np.array([x1, y1, x2, y_split], dtype=np.float64)
 
 
@@ -419,11 +623,12 @@ def _football_appearance_score(
     mean_s = float(np.mean(s))
     mean_v = float(np.mean(v))
 
-    # Hard color gate: football should be mostly brown, not vivid orange/neon.
+    # Soft color descriptors: footballs in low-res footage often look warmer/brighter
+    # than expected, so keep this permissive and let player-context do more work.
     brown_mask = (
-        (h >= 7.0) & (h <= 20.0) &
-        (s >= 45.0) & (s <= 185.0) &
-        (v >= 22.0) & (v <= 150.0)
+        (h >= 5.0) & (h <= 22.0) &
+        (s >= 35.0) & (s <= 210.0) &
+        (v >= 18.0) & (v <= 205.0)
     )
     orange_mask = (
         (h >= 8.0) & (h <= 24.0) &
@@ -431,14 +636,12 @@ def _football_appearance_score(
     )
     brown_ratio = float(np.mean(brown_mask))
     orange_ratio = float(np.mean(orange_mask))
-    if brown_ratio < 0.30 or orange_ratio > 0.10:
-        return -1.0
 
-    # Brown footballs are darker and less saturated than bright orange cones.
-    hue_score = float(np.exp(-((mean_h - 14.0) ** 2) / (2.0 * (8.0 ** 2))))
-    sat_score = float(np.exp(-((mean_s - 105.0) ** 2) / (2.0 * (50.0 ** 2))))
-    val_score = float(np.exp(-((mean_v - 78.0) ** 2) / (2.0 * (30.0 ** 2))))
-    color_score = 0.40 * hue_score + 0.20 * sat_score + 0.20 * val_score + 0.20 * brown_ratio
+    # Brown footballs are often brighter in compression-heavy clips, so use a wider model.
+    hue_score = float(np.exp(-((mean_h - 14.0) ** 2) / (2.0 * (10.0 ** 2))))
+    sat_score = float(np.exp(-((mean_s - 118.0) ** 2) / (2.0 * (62.0 ** 2))))
+    val_score = float(np.exp(-((mean_v - 108.0) ** 2) / (2.0 * (48.0 ** 2))))
+    color_score = 0.34 * hue_score + 0.18 * sat_score + 0.18 * val_score + 0.30 * brown_ratio
 
     aspect = bw / float(bh)
     shape_score = max(
@@ -480,10 +683,16 @@ def _football_appearance_score(
         + 0.30 * hands_score
     )
 
-    # Strongly down-rank cone-like bright orange candidates.
+    # Bright training cones are usually much more orange than footballs and often lack
+    # strong carry-zone association to a player.
     cone_like = 8.0 <= mean_h <= 24.0 and mean_s >= 115.0 and mean_v >= 120.0
     if cone_like:
-        score -= 0.22
+        cone_penalty = 0.12 + 0.28 * orange_ratio
+        score -= cone_penalty * max(0.20, 1.0 - hands_score)
+
+    # Hard reject only when color looks strongly cone-like and there is weak player context.
+    if orange_ratio > 0.66 and brown_ratio < 0.12 and hands_score < 0.18 and prox_score < 0.28:
+        return -1.0
     return score
 
 
@@ -493,7 +702,7 @@ def _pick_best_football_box(
     ball_confs: np.ndarray,
     person_xyxy: np.ndarray,
     frame_diag: float,
-    min_score: float = 0.42,
+    min_score: float = 0.26,
 ) -> np.ndarray | None:
     if len(ball_xyxy) == 0:
         return None
@@ -583,12 +792,372 @@ def _head_rotation_text(kpts: np.ndarray, *, conf_face: float = 0.32, conf_body:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Probabilistic ball tracker
+# ---------------------------------------------------------------------------
+
+class BallTrackState:
+    """Lightweight constant-velocity Kalman-style football tracker."""
+
+    __slots__ = (
+        "box", "center", "velocity", "size",
+        "miss_count", "age", "visible_count", "confidence",
+        "state", "owner_track_id", "last_update_frame", "_handoff_frames_left",
+    )
+
+    def __init__(self) -> None:
+        self.box: np.ndarray | None = None
+        self.center: np.ndarray | None = None
+        self.velocity = np.zeros(2, dtype=np.float64)
+        self.size = np.zeros(2, dtype=np.float64)   # (w, h)
+        self.miss_count: int = 0
+        self.age: int = 0
+        self.visible_count: int = 0
+        self.confidence: float = 0.0
+        self.state: str = "lost"   # "visible" | "predicted" | "handoff" | "lost"
+        self.owner_track_id: int | None = None
+        self.last_update_frame: int = -1
+        self._handoff_frames_left: int = 0
+
+    def predict(self) -> np.ndarray | None:
+        if self.center is None:
+            return None
+        pc = self.center + self.velocity
+        w, h = float(self.size[0]), float(self.size[1])
+        return np.array(
+            [pc[0] - w / 2, pc[1] - h / 2, pc[0] + w / 2, pc[1] + h / 2],
+            dtype=np.float64,
+        )
+
+    def update(self, measured_box: np.ndarray, score: float, owner_track_id: int | None) -> None:
+        mb = measured_box.astype(np.float64)
+        mc = np.array([(mb[0] + mb[2]) / 2.0, (mb[1] + mb[3]) / 2.0], dtype=np.float64)
+        ms = np.array([mb[2] - mb[0], mb[3] - mb[1]], dtype=np.float64)
+        if self.center is not None:
+            self.velocity = (
+                BALL_TRACK_VEL_ALPHA * (mc - self.center)
+                + (1.0 - BALL_TRACK_VEL_ALPHA) * self.velocity
+            )
+            self.size = BALL_TRACK_SIZE_ALPHA * ms + (1.0 - BALL_TRACK_SIZE_ALPHA) * self.size
+        else:
+            self.velocity = np.zeros(2, dtype=np.float64)
+            self.size = ms.copy()
+        self.center = mc
+        self.box = mb.copy()
+        self.confidence = score
+        self.owner_track_id = owner_track_id
+        self.miss_count = 0
+        self.age += 1
+        self.visible_count += 1
+
+    def mark_missed(self) -> None:
+        self.miss_count += 1
+        self.age += 1
+        if self.center is not None:
+            self.center = self.center + self.velocity
+            w, h = float(self.size[0]), float(self.size[1])
+            self.box = np.array(
+                [
+                    self.center[0] - w / 2,
+                    self.center[1] - h / 2,
+                    self.center[0] + w / 2,
+                    self.center[1] + h / 2,
+                ],
+                dtype=np.float64,
+            )
+
+    def reset(self) -> None:
+        self.box = None
+        self.center = None
+        self.velocity[:] = 0.0
+        self.size[:] = 0.0
+        self.miss_count = 0
+        self.age = 0
+        self.visible_count = 0
+        self.confidence = 0.0
+        self.state = "lost"
+        self.owner_track_id = None
+        self.last_update_frame = -1
+        self._handoff_frames_left = 0
+
+
+def _chest_roi_xyxy(person_xyxy: np.ndarray) -> np.ndarray:
+    """Carry-zone region: middle torso through hips where youth players usually hold the ball."""
+    x1, y1, x2, y2 = [float(v) for v in person_xyxy]
+    w, h = x2 - x1, y2 - y1
+    return np.array(
+        [x1 + 0.21 * w, y1 + 0.16 * h, x1 + 0.79 * w, y1 + 0.70 * h],
+        dtype=np.float64,
+    )
+
+
+def _ball_chest_prior_score(
+    person_xyxy: np.ndarray, ball_xyxy: np.ndarray, frame_diag: float
+) -> float:
+    """Soft score: higher when ball overlaps or is near the player's chest ROI.
+    Not a hard gate — outside the chest zone still returns > 0."""
+    chest = _chest_roi_xyxy(person_xyxy)
+    bc = _box_center(ball_xyxy)
+    cc = _box_center(chest)
+    overlap = _iou(chest, ball_xyxy.astype(np.float64))
+    dist_norm = float(np.linalg.norm(bc - cc)) / (frame_diag + 1e-6)
+    inside = chest[0] <= bc[0] <= chest[2] and chest[1] <= bc[1] <= chest[3]
+    return float(
+        overlap * 0.40
+        + (0.25 if inside else 0.0)
+        + float(np.exp(-dist_norm * 12.0)) * 0.35
+    )
+
+
+def _score_ball_candidate(
+    frame_bgr: np.ndarray,
+    candidate_xyxy: np.ndarray,
+    candidate_conf: float,
+    predicted_box: np.ndarray | None,
+    person_xyxy: np.ndarray,
+    person_track_ids: np.ndarray,
+    frame_diag: float,
+    prev_owner_track_id: int | None,
+    tracker_state: str,
+) -> tuple[float, int | None]:
+    """Score one YOLO ball candidate; returns (total_score, best_owner_track_id)."""
+    cand = candidate_xyxy.astype(np.float64)
+    c_center = _box_center(cand)
+
+    # Temporal consistency with the Kalman prediction
+    temporal_score = 0.0
+    if predicted_box is not None:
+        pred = predicted_box.astype(np.float64)
+        pred_c = _box_center(pred)
+        dist_norm = float(np.linalg.norm(c_center - pred_c)) / (frame_diag + 1e-6)
+        # Wider distance tolerance during handoff
+        sigma = 0.14 if tracker_state == "handoff" else 0.07
+        dist_score = float(np.exp(-(dist_norm ** 2) / (2.0 * sigma ** 2)))
+        iou_score = _iou(pred, cand)
+        pw = max(1.0, float(pred[2] - pred[0]))
+        ph = max(1.0, float(pred[3] - pred[1]))
+        cw = max(1.0, float(cand[2] - cand[0]))
+        ch = max(1.0, float(cand[3] - cand[1]))
+        size_sim = min(pw / cw, cw / pw) * min(ph / ch, ch / ph)
+        temporal_score = 0.55 * dist_score + 0.30 * iou_score + 0.15 * size_sim
+
+    # Appearance (existing color/shape scorer; returns -1 on hard color reject)
+    p_arr = person_xyxy.astype(np.float64) if len(person_xyxy) > 0 else np.empty((0, 4), np.float64)
+    raw_app = _football_appearance_score(frame_bgr, cand, p_arr, frame_diag, candidate_conf)
+    appearance_score = float(np.clip(raw_app, 0.0, 1.0)) if raw_app >= 0.0 else 0.0
+    hard_rejected = raw_app < 0.0
+
+    # Soft player context: chest prior + proximity, owner continuity bonus
+    best_owner_id: int | None = None
+    best_owner_score = -1.0
+    best_chest = 0.0
+    n_persons = len(person_xyxy)
+
+    for idx in range(n_persons):
+        p_box = person_xyxy[idx].astype(np.float64)
+        tid = int(person_track_ids[idx]) if idx < len(person_track_ids) else None
+        chest = _ball_chest_prior_score(p_box, cand, frame_diag)
+        prox = float(
+            np.exp(
+                -float(np.linalg.norm(c_center - _box_center(p_box))) / (frame_diag + 1e-6) * 8.0
+            )
+        )
+        owner_bonus = BALL_TRACK_OWNER_WEIGHT if (tid is not None and tid == prev_owner_track_id) else 0.0
+        p_score = chest + 0.25 * prox + owner_bonus
+        if chest > best_chest:
+            best_chest = chest
+        if p_score > best_owner_score:
+            best_owner_score = p_score
+            best_owner_id = tid
+
+    # During handoff: average chest across the 2 nearest players for more tolerance
+    handoff_bonus = 0.0
+    if tracker_state == "handoff" and n_persons >= 2:
+        dists = sorted(
+            (float(np.linalg.norm(c_center - _box_center(person_xyxy[i].astype(np.float64)))), i)
+            for i in range(n_persons)
+        )
+        top2_chest = sum(
+            _ball_chest_prior_score(person_xyxy[i].astype(np.float64), cand, frame_diag)
+            for _, i in dists[:2]
+        ) / 2.0
+        handoff_bonus = max(0.0, top2_chest - best_chest) * 0.5
+
+    player_score = best_chest + handoff_bonus
+
+    total = (
+        BALL_TRACK_TEMPORAL_WEIGHT * temporal_score
+        + BALL_TRACK_APPEARANCE_WEIGHT * appearance_score
+        + BALL_TRACK_CHEST_WEIGHT * player_score
+        + 0.06 * candidate_conf
+    )
+    if hard_rejected:
+        total *= 0.40  # soft penalty rather than full discard
+    return float(total), best_owner_id
+
+
+def _detect_handoff_condition(
+    ball_track: BallTrackState,
+    person_xyxy: np.ndarray,
+    person_track_ids: np.ndarray,
+    frame_diag: float,
+) -> bool:
+    """True when the known owner and another player are both near the ball and near each other."""
+    if ball_track.owner_track_id is None or ball_track.center is None:
+        return False
+    if len(person_xyxy) < 2:
+        return False
+
+    ball_c = ball_track.center
+    close_idxs: list[int] = []
+    owner_close = False
+
+    for idx, p_box in enumerate(person_xyxy):
+        pc = _box_center(p_box.astype(np.float64))
+        if float(np.linalg.norm(ball_c - pc)) / (frame_diag + 1e-6) < 0.20:
+            close_idxs.append(idx)
+            if int(person_track_ids[idx]) == ball_track.owner_track_id:
+                owner_close = True
+
+    if not owner_close or len(close_idxs) < 2:
+        return False
+
+    for a in range(len(close_idxs)):
+        for b in range(a + 1, len(close_idxs)):
+            ca = _box_center(person_xyxy[close_idxs[a]].astype(np.float64))
+            cb = _box_center(person_xyxy[close_idxs[b]].astype(np.float64))
+            if float(np.linalg.norm(ca - cb)) / (frame_diag + 1e-6) < 0.25:
+                return True
+    return False
+
+
+_BALL_STATE_LABEL: dict[str, str] = {
+    "visible": "Football",
+    "predicted": "Football (pred)",
+    "handoff": "Football (handoff)",
+    "lost": "Football",
+}
+
+
+def update_ball_track(
+    frame_bgr: np.ndarray,
+    ball_track: BallTrackState,
+    ball_xyxy: np.ndarray,
+    ball_confs: np.ndarray,
+    person_xyxy: np.ndarray,
+    person_track_ids: np.ndarray,
+    frame_diag: float,
+    frame_i: int,
+) -> np.ndarray | None:
+    """
+    One-frame update of the probabilistic ball tracker.
+    Returns the current drawable ball box, or None when the track is lost.
+    """
+    predicted_box = ball_track.predict()
+
+    # Handoff detection only while track is active
+    if ball_track.state != "lost":
+        if _detect_handoff_condition(ball_track, person_xyxy, person_track_ids, frame_diag):
+            if ball_track._handoff_frames_left <= 0:
+                ball_track._handoff_frames_left = BALL_TRACK_HANDOFF_WINDOW
+        if ball_track._handoff_frames_left > 0:
+            ball_track.state = "handoff"
+            ball_track._handoff_frames_left -= 1
+
+    # Score every YOLO ball candidate
+    best_score = -1.0
+    best_box: np.ndarray | None = None
+    best_owner: int | None = None
+
+    for i in range(len(ball_xyxy)):
+        score, owner_id = _score_ball_candidate(
+            frame_bgr,
+            ball_xyxy[i],
+            float(ball_confs[i]),
+            predicted_box,
+            person_xyxy,
+            person_track_ids,
+            frame_diag,
+            ball_track.owner_track_id,
+            ball_track.state,
+        )
+        if score > best_score:
+            best_score = score
+            best_box = ball_xyxy[i]
+            best_owner = owner_id
+
+    threshold = BALL_TRACK_REACQUIRE_SCORE if ball_track.state == "lost" else BALL_TRACK_MIN_MATCH_SCORE
+
+    if best_box is not None and best_score >= threshold:
+        ball_track.update(best_box, best_score, best_owner)
+        if ball_track._handoff_frames_left <= 0:
+            ball_track.state = "visible"
+        ball_track.last_update_frame = frame_i
+        return ball_track.box
+
+    if ball_track.state == "lost":
+        return None
+    ball_track.mark_missed()
+    if ball_track.miss_count > BALL_TRACK_MAX_MISS:
+        ball_track.reset()
+        return None
+    if ball_track.state != "handoff":
+        ball_track.state = "predicted"
+    return ball_track.box
+
+
+def _detect_people_and_ball_candidates(
+    model: YOLO,
+    frame_bgr: np.ndarray,
+    *,
+    person_conf: float,
+    ball_conf: float,
+    device: str | None,
+    persist_people: bool,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    people_kwargs: dict = {
+        "persist": persist_people,
+        "classes": [PERSON_CLASS_ID],
+        "conf": person_conf,
+        "verbose": False,
+    }
+    if device:
+        people_kwargs["device"] = device
+    people_res = model.track(frame_bgr, **people_kwargs)[0]
+
+    person_ids = np.array([], dtype=np.int64)
+    person_xyxy = np.empty((0, 4), dtype=np.float64)
+    person_confs = np.array([], dtype=np.float64)
+    if people_res.boxes is not None and len(people_res.boxes) > 0 and people_res.boxes.id is not None:
+        person_xyxy = people_res.boxes.xyxy.cpu().numpy()
+        person_confs = people_res.boxes.conf.cpu().numpy()
+        person_ids = people_res.boxes.id.cpu().numpy().astype(np.int64)
+
+    ball_kwargs: dict = {
+        "classes": [BALL_CLASS_ID],
+        "conf": ball_conf,
+        "verbose": False,
+    }
+    if device:
+        ball_kwargs["device"] = device
+    ball_res = model.predict(frame_bgr, **ball_kwargs)[0]
+
+    ball_xyxy = np.empty((0, 4), dtype=np.float64)
+    ball_confs = np.array([], dtype=np.float64)
+    if ball_res.boxes is not None and len(ball_res.boxes) > 0:
+        ball_xyxy = ball_res.boxes.xyxy.cpu().numpy()
+        ball_confs = ball_res.boxes.conf.cpu().numpy()
+
+    return person_ids, person_xyxy, person_confs, ball_xyxy, ball_confs
+
+
 def run_top_motion_carrier_tackler_pipeline(
     input_path: Path,
     output_path: Path,
     *,
     weights: str,
     conf: float,
+    ball_conf: float,
     device: str | None,
     max_frames: int = 4500,
     pose_weights: str | None = DEFAULT_POSE_WEIGHTS,
@@ -620,61 +1189,40 @@ def run_top_motion_carrier_tackler_pipeline(
         raise SystemExit(f"No frames read from {input_path}")
 
     model = YOLO(weights)
-    track_kwargs: dict = {
-        "persist": True,
-        "classes": [PERSON_CLASS_ID, BALL_CLASS_ID],
-        "conf": conf,
-        "verbose": False,
-    }
-    if device:
-        track_kwargs["device"] = device
-
     motion_sum: dict[int, float] = defaultdict(float)
     last_center: dict[int, np.ndarray] = {}
     presence: dict[int, int] = defaultdict(int)
     frame_records: list[dict] = []
 
     for frame_bgr in frames:
-        results = model.track(frame_bgr, **track_kwargs)[0]
-        boxes = results.boxes
         rec: dict = {
             "person_ids": np.array([], dtype=np.int64),
             "person_xyxy": np.empty((0, 4), dtype=np.float64),
             "person_confs": np.array([], dtype=np.float64),
-            "balls": [],
+            "ball_xyxy": np.empty((0, 4), dtype=np.float64),
+            "ball_confs": np.array([], dtype=np.float64),
         }
-        if boxes is not None and len(boxes) > 0:
-            xyxy_all = boxes.xyxy.cpu().numpy()
-            confs_all = boxes.conf.cpu().numpy()
-            cls_all = boxes.cls.cpu().numpy().astype(np.int64)
-            ids_t = boxes.id
-            if ids_t is not None:
-                ids_all = ids_t.cpu().numpy().astype(np.int64)
-                person_mask = cls_all == PERSON_CLASS_ID
-                ball_mask = cls_all == BALL_CLASS_ID
-                person_xyxy = xyxy_all[person_mask]
-                person_confs = confs_all[person_mask]
-                person_ids = ids_all[person_mask]
-                ball_xyxy = xyxy_all[ball_mask]
-                rec["person_ids"] = person_ids
-                rec["person_xyxy"] = person_xyxy
-                rec["person_confs"] = person_confs
-                best_ball_box = _pick_best_football_box(
-                    frame_bgr,
-                    ball_xyxy,
-                    confs_all[ball_mask],
-                    person_xyxy,
-                    frame_diag,
-                )
-                rec["balls"] = [best_ball_box.copy()] if best_ball_box is not None else []
+        person_ids, person_xyxy, person_confs, ball_xyxy, ball_confs = _detect_people_and_ball_candidates(
+            model,
+            frame_bgr,
+            person_conf=conf,
+            ball_conf=ball_conf,
+            device=device,
+            persist_people=True,
+        )
+        rec["person_ids"] = person_ids
+        rec["person_xyxy"] = person_xyxy
+        rec["person_confs"] = person_confs
+        rec["ball_xyxy"] = ball_xyxy
+        rec["ball_confs"] = ball_confs
 
-                for tid, box in zip(person_ids, person_xyxy, strict=True):
-                    tid_i = int(tid)
-                    presence[tid_i] += 1
-                    c = _box_center(box)
-                    if tid_i in last_center:
-                        motion_sum[tid_i] += float(np.linalg.norm(c - last_center[tid_i]))
-                    last_center[tid_i] = c
+        for tid, box in zip(person_ids, person_xyxy, strict=True):
+            tid_i = int(tid)
+            presence[tid_i] += 1
+            c = _box_center(box)
+            if tid_i in last_center:
+                motion_sum[tid_i] += float(np.linalg.norm(c - last_center[tid_i]))
+            last_center[tid_i] = c
 
         frame_records.append(rec)
 
@@ -700,35 +1248,18 @@ def run_top_motion_carrier_tackler_pipeline(
                 tid_b = int(t)
                 break
 
-    carrier_scores: dict[int, float] = defaultdict(float)
-    for rec in frame_records:
-        pids = rec["person_ids"]
-        if len(pids) == 0:
-            continue
-        pxy = rec["person_xyxy"]
-        tid_to_i = {int(t): i for i, t in enumerate(pids)}
-        for ball in rec["balls"]:
-            for tid in (tid_a, tid_b):
-                if tid not in tid_to_i:
-                    continue
-                carrier_scores[tid] += _ball_hands_association_score(
-                    pxy[tid_to_i[tid]], ball
-                )
-
-    score_a = float(carrier_scores.get(tid_a, 0.0))
-    score_b = float(carrier_scores.get(tid_b, 0.0))
-    if score_a == 0.0 and score_b == 0.0:
-        carrier_tid, tackler_tid = tid_a, tid_b
-    elif score_a >= score_b:
-        carrier_tid, tackler_tid = tid_a, tid_b
-    else:
-        carrier_tid, tackler_tid = tid_b, tid_a
+    carrier_tid, tackler_tid, possession_stats = _choose_ballcarrier_from_possession(
+        frames,
+        frame_records,
+        tid_a,
+        tid_b,
+        frame_diag,
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     writer = _open_writer(output_path, fps, width, height)
     last_box: dict[int, np.ndarray | None] = {carrier_tid: None, tackler_tid: None}
     miss_ct: dict[int, int] = {carrier_tid: 0, tackler_tid: 0}
-    hold_max = 10
 
     pose_model: YOLO | None = None
     if pose_weights:
@@ -742,7 +1273,7 @@ def run_top_motion_carrier_tackler_pipeline(
             ) from e
 
     try:
-        for frame_bgr, rec in zip(frames, frame_records, strict=True):
+        for frame_idx, (frame_bgr, rec) in enumerate(zip(frames, frame_records, strict=True)):
             pids = rec["person_ids"]
             pxy = rec["person_xyxy"]
             tid_to_i = {int(t): i for i, t in enumerate(pids)} if len(pids) else {}
@@ -759,8 +1290,44 @@ def run_top_motion_carrier_tackler_pipeline(
                 if pres.keypoints is not None and len(pres.keypoints):
                     pose_kpts = pres.keypoints.data.cpu().numpy()
 
-            for ball in rec["balls"]:
-                draw_player_box(frame_bgr, ball, color=(0, 255, 255), label="Football")
+            ball_box: np.ndarray | None = None
+            ball_label = "Football"
+            if carrier_tid in tid_to_i:
+                carrier_box = pxy[tid_to_i[carrier_tid]]
+                _, ball_box, ball_source = _player_ball_possession_score(
+                    frame_bgr,
+                    carrier_box,
+                    rec["ball_xyxy"],
+                    rec["ball_confs"],
+                    frame_diag,
+                )
+                if ball_box is None:
+                    ball_box = _estimate_ball_box_from_carrier(carrier_box)
+                    ball_label = "Football (est)"
+                elif ball_source == "roi":
+                    ball_label = "Football"
+            elif last_box.get(carrier_tid) is not None:
+                carrier_box = last_box[carrier_tid]
+                _, ball_box, ball_source = _player_ball_possession_score(
+                    frame_bgr,
+                    carrier_box,
+                    rec["ball_xyxy"],
+                    rec["ball_confs"],
+                    frame_diag,
+                )
+                if ball_box is None:
+                    ball_box = _estimate_ball_box_from_carrier(carrier_box)
+                    ball_label = "Football (est)"
+                elif ball_source == "roi":
+                    ball_label = "Football"
+
+            if ball_box is not None:
+                draw_player_box(
+                    frame_bgr,
+                    ball_box,
+                    color=(0, 255, 255),
+                    label=ball_label,
+                )
 
             for role_tid, label, color, sk_color in (
                 (carrier_tid, "Ball Carrier", (255, 0, 0), (0, 220, 120)),
@@ -773,15 +1340,11 @@ def run_top_motion_carrier_tackler_pipeline(
                     last_box[role_tid] = box.copy()
                     miss_ct[role_tid] = 0
                     box_for_pose = box
-                elif last_box.get(role_tid) is not None and miss_ct[role_tid] < hold_max:
+                elif last_box.get(role_tid) is not None:
+                    # Always show last known position — no miss-count limit
                     miss_ct[role_tid] += 1
                     hb = last_box[role_tid]
-                    draw_player_box(
-                        frame_bgr,
-                        hb,
-                        color=color,
-                        label=f"{label} (hold)",
-                    )
+                    draw_player_box(frame_bgr, hb, color=color, label=label)
                     box_for_pose = hb
                 else:
                     miss_ct[role_tid] += 1
@@ -845,8 +1408,12 @@ def run_top_motion_carrier_tackler_pipeline(
     finally:
         writer.release()
 
+    carrier_stats = possession_stats[carrier_tid]
+    tackler_stats = possession_stats[tackler_tid]
     print(
         f"Top motion IDs: {tid_a}, {tid_b} | carrier={carrier_tid} tackler={tackler_tid} "
+        f"| wins {carrier_tid}:{carrier_stats['wins']:.0f} vs {tackler_tid}:{tackler_stats['wins']:.0f} "
+        f"| evidence {carrier_tid}:{carrier_stats['evidence_frames']:.0f} vs {tackler_tid}:{tackler_stats['evidence_frames']:.0f} "
         f"| wrote {len(frames)} frames to {output_path}"
     )
 
@@ -857,6 +1424,7 @@ def run_pipeline(
     *,
     weights: str,
     conf: float,
+    ball_conf: float,
     device: str | None,
 ) -> None:
     model = YOLO(weights)
@@ -878,7 +1446,7 @@ def run_pipeline(
     carrier_miss = 0
     tackler_miss = 0
     lock_hold_frames = 8
-    max_hold_frames = 8
+    ball_track = BallTrackState()
     frame_i = 0
 
     try:
@@ -887,39 +1455,14 @@ def run_pipeline(
             if not ok:
                 break
 
-            kwargs: dict = {
-                "persist": True,
-                "classes": [PERSON_CLASS_ID, BALL_CLASS_ID],
-                "conf": conf,
-                "verbose": False,
-            }
-            if device:
-                kwargs["device"] = device
-
-            results = model.track(frame_bgr, **kwargs)[0]
-            boxes = results.boxes
-            if boxes is None or len(boxes) == 0:
-                writer.write(frame_bgr)
-                frame_i += 1
-                continue
-
-            xyxy_all = boxes.xyxy.cpu().numpy()
-            confs_all = boxes.conf.cpu().numpy()
-            cls_all = boxes.cls.cpu().numpy().astype(np.int64)
-            ids_t = boxes.id
-            if ids_t is None:
-                writer.write(frame_bgr)
-                frame_i += 1
-                continue
-
-            ids_all = ids_t.cpu().numpy().astype(np.int64)
-            person_mask = cls_all == PERSON_CLASS_ID
-            ball_mask = cls_all == BALL_CLASS_ID
-            person_xyxy = xyxy_all[person_mask]
-            person_confs = confs_all[person_mask]
-            person_ids = ids_all[person_mask]
-            ball_xyxy = xyxy_all[ball_mask]
-            ball_confs = confs_all[ball_mask]
+            person_ids, person_xyxy, person_confs, ball_xyxy, ball_confs = _detect_people_and_ball_candidates(
+                model,
+                frame_bgr,
+                person_conf=conf,
+                ball_conf=ball_conf,
+                device=device,
+                persist_people=True,
+            )
 
             if len(person_xyxy) == 0:
                 writer.write(frame_bgr)
@@ -933,34 +1476,45 @@ def run_pipeline(
                 c = _box_center(box)
                 history[tid].append((float(c[0]), float(c[1])))
 
-            best_ball_box = _pick_best_football_box(
+            ball_box = update_ball_track(
                 frame_bgr,
+                ball_track,
                 ball_xyxy,
                 ball_confs,
                 person_xyxy,
+                person_ids,
                 frame_diag,
+                frame_i,
             )
 
             tid_to_idx = {int(t): i for i, t in enumerate(person_ids)}
 
+            def _best_carrier_idx() -> int:
+                c = pick_carrier_idx_from_ball(person_xyxy, person_confs, ball_track.box, frame_diag)
+                if c is not None:
+                    return c
+                areas = (person_xyxy[:, 2] - person_xyxy[:, 0]) * (person_xyxy[:, 3] - person_xyxy[:, 1])
+                return int(np.argmax(person_confs * (areas / (np.max(areas) + 1e-6))))
+
+            # --- Carrier: always assign, re-acquire on prolonged miss ---
             if locked_carrier_tid is None:
-                c_idx = pick_carrier_idx_from_ball(person_xyxy, person_confs, best_ball_box, frame_diag)
-                if c_idx is not None:
-                    locked_carrier_tid = int(person_ids[c_idx])
+                locked_carrier_tid = int(person_ids[_best_carrier_idx()])
 
             if locked_carrier_tid in tid_to_idx:
-                carrier_idx = tid_to_idx[locked_carrier_tid]
-                carrier_box = person_xyxy[carrier_idx]
+                carrier_box = person_xyxy[tid_to_idx[locked_carrier_tid]]
                 last_carrier_box = carrier_box.copy()
                 carrier_miss = 0
             else:
-                carrier_idx = None
                 carrier_miss += 1
                 if carrier_miss > lock_hold_frames:
-                    locked_carrier_tid = None
-                    last_carrier_box = None
+                    # Re-pick rather than drop to None
+                    new_c = _best_carrier_idx()
+                    locked_carrier_tid = int(person_ids[new_c])
+                    last_carrier_box = person_xyxy[new_c].copy()
+                    carrier_miss = 0
 
-            if locked_carrier_tid is not None and locked_carrier_tid in tid_to_idx:
+            # --- Tackler: always assign, re-acquire on prolonged miss ---
+            if locked_carrier_tid in tid_to_idx:
                 carrier_idx_now = tid_to_idx[locked_carrier_tid]
                 tackler_idx = pick_tackler_idx_against_carrier(
                     person_xyxy,
@@ -973,20 +1527,56 @@ def run_pipeline(
                 if tackler_idx is not None:
                     locked_tackler_tid = int(person_ids[tackler_idx])
 
+            if locked_tackler_tid is None:
+                # Bootstrap: pick first person that isn't the carrier
+                for i, tid in enumerate(person_ids):
+                    if int(tid) != locked_carrier_tid:
+                        locked_tackler_tid = int(tid)
+                        break
+                if locked_tackler_tid is None and len(person_ids) > 0:
+                    locked_tackler_tid = int(person_ids[0])
+
             if locked_tackler_tid in tid_to_idx:
-                t_idx = tid_to_idx[locked_tackler_tid]
-                t_box = person_xyxy[t_idx]
+                t_box = person_xyxy[tid_to_idx[locked_tackler_tid]]
                 last_tackler_box = t_box.copy()
                 tackler_miss = 0
             else:
                 tackler_miss += 1
                 if tackler_miss > lock_hold_frames:
-                    locked_tackler_tid = None
-                    last_tackler_box = None
+                    # Re-pick best non-carrier person
+                    for i, tid in enumerate(person_ids):
+                        if int(tid) != locked_carrier_tid:
+                            locked_tackler_tid = int(tid)
+                            last_tackler_box = person_xyxy[i].copy()
+                            tackler_miss = 0
+                            break
 
-            if best_ball_box is not None:
-                draw_player_box(frame_bgr, best_ball_box, color=(0, 255, 255), label="Football")
+            if ball_box is not None:
+                draw_player_box(
+                    frame_bgr,
+                    ball_box,
+                    color=(0, 255, 255),
+                    label=_BALL_STATE_LABEL.get(ball_track.state, "Football"),
+                )
+            elif locked_carrier_tid is not None and locked_carrier_tid in tid_to_idx:
+                carrier_box = person_xyxy[tid_to_idx[locked_carrier_tid]]
+                fallback_ball = _detect_ball_from_carrier_roi(frame_bgr, carrier_box)
+                draw_player_box(
+                    frame_bgr,
+                    fallback_ball if fallback_ball is not None else _estimate_ball_box_from_carrier(carrier_box),
+                    color=(0, 255, 255),
+                    label="Football" if fallback_ball is not None else "Football (est)",
+                )
+            elif last_carrier_box is not None and carrier_miss <= max_hold_frames:
+                fallback_ball = _detect_ball_from_carrier_roi(frame_bgr, last_carrier_box)
+                draw_player_box(
+                    frame_bgr,
+                    fallback_ball if fallback_ball is not None else _estimate_ball_box_from_carrier(last_carrier_box),
+                    color=(0, 255, 255),
+                    label="Football" if fallback_ball is not None else "Football (est)",
+                )
 
+            # Draw carrier — always show last known box, no miss limit
             if locked_carrier_tid is not None and locked_carrier_tid in tid_to_idx:
                 draw_player_box(
                     frame_bgr,
@@ -994,9 +1584,10 @@ def run_pipeline(
                     color=(255, 0, 0),
                     label="Ball Carrier",
                 )
-            elif last_carrier_box is not None and carrier_miss <= max_hold_frames:
-                draw_player_box(frame_bgr, last_carrier_box, color=(255, 0, 0), label="Ball Carrier (hold)")
+            elif last_carrier_box is not None:
+                draw_player_box(frame_bgr, last_carrier_box, color=(255, 0, 0), label="Ball Carrier")
 
+            # Draw tackler — always show last known box, no miss limit
             if locked_tackler_tid is not None and locked_tackler_tid in tid_to_idx:
                 draw_player_box(
                     frame_bgr,
@@ -1004,8 +1595,8 @@ def run_pipeline(
                     color=(0, 0, 255),
                     label="Tackler",
                 )
-            elif last_tackler_box is not None and tackler_miss <= max_hold_frames:
-                draw_player_box(frame_bgr, last_tackler_box, color=(0, 0, 255), label="Tackler (hold)")
+            elif last_tackler_box is not None:
+                draw_player_box(frame_bgr, last_tackler_box, color=(0, 0, 255), label="Tackler")
 
             writer.write(frame_bgr)
             frame_i += 1
@@ -1022,6 +1613,7 @@ def run_trained_tackler_pipeline(
     *,
     weights: str,
     conf: float,
+    ball_conf: float,
     device: str | None,
 ) -> None:
     """Draw the highest-confidence tackler box from a single-class fine-tuned model."""
@@ -1041,8 +1633,10 @@ def run_trained_tackler_pipeline(
     locked_tackler_tid: int | None = None
     last_carrier_box: np.ndarray | None = None
     last_tackler_box: np.ndarray | None = None
+    last_ball_box: np.ndarray | None = None
     carrier_miss = 0
     tackler_miss = 0
+    ball_miss = 0
     max_hold_frames = 8
 
     try:
@@ -1051,39 +1645,14 @@ def run_trained_tackler_pipeline(
             if not ok:
                 break
 
-            kwargs: dict = {
-                "persist": True,
-                "classes": [PERSON_CLASS_ID, BALL_CLASS_ID],
-                "conf": conf,
-                "verbose": False,
-            }
-            if device:
-                kwargs["device"] = device
-
-            results = model.track(frame_bgr, **kwargs)[0]
-            boxes = results.boxes
-            if boxes is None or len(boxes) == 0:
-                writer.write(frame_bgr)
-                frame_i += 1
-                continue
-
-            xyxy_all = boxes.xyxy.cpu().numpy()
-            confs_all = boxes.conf.cpu().numpy()
-            cls_all = boxes.cls.cpu().numpy().astype(np.int64)
-            ids_t = boxes.id
-            if ids_t is None:
-                writer.write(frame_bgr)
-                frame_i += 1
-                continue
-
-            ids_all = ids_t.cpu().numpy().astype(np.int64)
-            person_mask = cls_all == PERSON_CLASS_ID
-            ball_mask = cls_all == BALL_CLASS_ID
-            person_xyxy = xyxy_all[person_mask]
-            person_confs = confs_all[person_mask]
-            person_ids = ids_all[person_mask]
-            ball_xyxy = xyxy_all[ball_mask]
-            ball_confs = confs_all[ball_mask]
+            person_ids, person_xyxy, person_confs, ball_xyxy, ball_confs = _detect_people_and_ball_candidates(
+                model,
+                frame_bgr,
+                person_conf=conf,
+                ball_conf=ball_conf,
+                device=device,
+                persist_people=True,
+            )
 
             if len(person_xyxy) == 0:
                 writer.write(frame_bgr)
@@ -1147,7 +1716,23 @@ def run_trained_tackler_pipeline(
                     last_tackler_box = None
 
             if best_ball_box is not None:
+                last_ball_box = best_ball_box.copy()
+                ball_miss = 0
                 draw_player_box(frame_bgr, best_ball_box, color=(0, 255, 255), label="Football")
+            elif last_ball_box is not None and ball_miss <= max_hold_frames:
+                ball_miss += 1
+                draw_player_box(frame_bgr, last_ball_box, color=(0, 255, 255), label="Football")
+            elif locked_carrier_tid is not None and locked_carrier_tid in tid_to_idx:
+                carrier_box = person_xyxy[tid_to_idx[locked_carrier_tid]]
+                fallback_ball = _detect_ball_from_carrier_roi(frame_bgr, carrier_box)
+                draw_player_box(
+                    frame_bgr,
+                    fallback_ball if fallback_ball is not None else _estimate_ball_box_from_carrier(carrier_box),
+                    color=(0, 255, 255),
+                    label="Football" if fallback_ball is not None else "Football (est)",
+                )
+            else:
+                ball_miss += 1
 
             if locked_carrier_tid is not None and locked_carrier_tid in tid_to_idx:
                 draw_player_box(
@@ -1224,6 +1809,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--conf", type=float, default=0.35, help="Detection confidence threshold")
     p.add_argument(
+        "--ball-conf",
+        type=float,
+        default=DEFAULT_BALL_CONF,
+        help="Football detection confidence threshold; lower than --conf to recover small blurry balls",
+    )
+    p.add_argument(
         "--device",
         default=None,
         help="torch device, e.g. mps, cuda:0, cpu (default: auto)",
@@ -1290,6 +1881,7 @@ def _run_one_video(args: argparse.Namespace, inp: Path, out: Path) -> None:
             out,
             weights=args.weights,
             conf=args.conf,
+            ball_conf=args.ball_conf,
             device=args.device,
         )
     elif args.mode == "top_motion":
@@ -1299,6 +1891,7 @@ def _run_one_video(args: argparse.Namespace, inp: Path, out: Path) -> None:
             out,
             weights=args.weights,
             conf=args.conf,
+            ball_conf=args.ball_conf,
             device=args.device,
             pose_weights=pw,
             pose_conf=args.pose_conf,
@@ -1309,6 +1902,7 @@ def _run_one_video(args: argparse.Namespace, inp: Path, out: Path) -> None:
             out,
             weights=args.weights,
             conf=args.conf,
+            ball_conf=args.ball_conf,
             device=args.device,
         )
 
