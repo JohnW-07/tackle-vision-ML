@@ -41,13 +41,14 @@ PERSON_CLASS_ID = 0
 BALL_CLASS_ID = 32  # COCO sports ball
 #DEFAULT_WEIGHTS = "yolo11n.pt"
 DEFAULT_WEIGHTS = "yolo26x.pt"
+#DEFAULT_WEIGHTS = "best.pt"
 DEFAULT_BALL_CONF = 0.15
 
 # Easy hot-swap for the pose model used by --mode top_motion.
 # Example alternatives:
 #TOP_MOTION_POSE_MODEL = "yolo11x-pose.pt"
-#TOP_MOTION_POSE_MODEL = "yolo26x-pose.pt"
-TOP_MOTION_POSE_MODEL = "yolo26n-pose.pt"
+TOP_MOTION_POSE_MODEL = "yolo26x-pose.pt"
+#TOP_MOTION_POSE_MODEL = "yolo26n-pose.pt"
 #TOP_MOTION_POSE_MODEL = "yolo11n-pose.pt"
 #TOP_MOTION_POSE_MODEL = "yolo11n.pt"
 
@@ -670,6 +671,10 @@ def _football_appearance_score(
         prox_score = float(np.exp(-((min_norm_d - 0.10) ** 2) / (2.0 * (0.18 ** 2))))
         # 0.15+ typically means ball is plausibly on/near torso-upper-body (hands proxy).
         hands_score = float(np.clip(best_hands_assoc / 0.35, 0.0, 1.0))
+
+        # Hard gate for hand-carry prior: reject detections far from any player's carry zone.
+        if best_hands_assoc < 0.07 and min_norm_d > 0.23:
+            return -1.0
 
     score = (
         0.14 * float(det_conf)

@@ -2,6 +2,8 @@
 
 Video tooling for tackle clips, centered on `tackle_bbox_pipeline.py`.
 
+Short writeup: see [TACKLEBBOX_PIPELINE.md](/Users/johnwu/UMD/ADC/CNH_26_SPR/tackle-vision-ML/TACKLEBBOX_PIPELINE.md).
+
 ## Main Pipeline
 
 `tackle_bbox_pipeline.py` detects and tracks players, identifies the likely ball

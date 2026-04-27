@@ -1,0 +1,9 @@
+# Tacklebbox Pipeline Writeup
+
+The `tacklebbox` pipeline takes a football clip, runs YOLO person tracking plus sports-ball detection, and writes back an annotated video that labels the likely `Ball Carrier`, `Tackler`, and football.
+
+In the main `top_motion` flow, the script first buffers the clip, then runs one tracking pass across all frames. For each tracked person ID it accumulates total motion and keeps the two most active tracks as the main tackle candidates. It then compares those two players over the whole clip using football-possession evidence: ball detections are scored by how close they are to the player’s upper body, how football-like they look, and whether a fallback ROI detector finds a football-shaped brown blob inside the player box. The player with stronger possession evidence is labeled `Ball Carrier`, and the other becomes `Tackler`.
+
+When rendering the output, the pipeline reuses those chosen identities across the full video, draws their boxes on every frame, and optionally overlays pose skeletons with a second YOLO pose model. If the football detector drops the ball, the script falls back to either a ball-shaped blob inside the carrier box or an estimated football box anchored to the carrier’s torso so the annotation stays visible.
+
+There are two other modes. `heuristic` works frame by frame: it tracks people, uses a probabilistic football tracker to keep the ball stable across misses and handoffs, picks the carrier from the ball position, and chooses the tackler as the nearby player moving most toward the carrier. `climax` is similar to `top_motion`, but instead of choosing the two players only by motion, it first finds the frame with the strongest player interaction, locks that pair, interpolates their boxes through missing frames, and then assigns carrier versus tackler from possession evidence.
