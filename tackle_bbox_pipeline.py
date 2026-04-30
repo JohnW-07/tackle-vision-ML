@@ -39,8 +39,8 @@ DEFAULT_ALL_INPUT_DIR = PROJECT_ROOT / "raws"
 DEFAULT_ALL_OUTPUT_DIR = PROJECT_ROOT / "finals" / "two_players"
 PERSON_CLASS_ID = 0
 BALL_CLASS_ID = 32  # COCO sports ball
-#DEFAULT_WEIGHTS = "yolo11n.pt"
-DEFAULT_WEIGHTS = "yolo26x.pt"
+#DEFAULT_WEIGHTS = "yolo26x.pt"
+DEFAULT_WEIGHTS = "yolo11n.pt"
 #DEFAULT_WEIGHTS = "best.pt"
 DEFAULT_BALL_CONF = 0.15
 DEFAULT_RESTRICTED_FOOTBALL_CONF = 0.18
@@ -49,8 +49,8 @@ DEFAULT_FOOTBALL_HOLD_FRAMES = 6
 
 # Easy hot-swap for the pose model used by --mode top_motion.
 # Example alternatives:
-#TOP_MOTION_POSE_MODEL = "yolo11x-pose.pt"
-TOP_MOTION_POSE_MODEL = "yolo26x-pose.pt"
+#TOP_MOTION_POSE_MODEL = "yolo26x-pose.pt"
+TOP_MOTION_POSE_MODEL = "yolo11n-pose.pt"
 #TOP_MOTION_POSE_MODEL = "yolo26n-pose.pt"
 #TOP_MOTION_POSE_MODEL = "yolo11n-pose.pt"
 #TOP_MOTION_POSE_MODEL = "yolo11n.pt"
@@ -1319,6 +1319,40 @@ def _find_climax_pair(
     return (best_raw_frame, pair[0], pair[1])
 
 
+def _select_players_of_interest(
+    frame_records: list[dict],
+    frame_diag: float,
+    motion_sum: dict[int, float],
+    presence: dict[int, int],
+    *,
+    person_conf_threshold: float = 0.5,
+) -> tuple[int, int, int | None, float]:
+    """
+    Tackle pair selection via tackle_pair_scorer (spec: proximity, overlap, opposing motion,
+    closing, overlap growth, persistence, crowd penalty, size similarity + smoothing).
+    Returns (tid_a, tid_b, best_frame_idx, confidence).
+    """
+    from tackle_pair_scorer import select_tackle_pair_from_sequence
+
+    thr = float(np.clip(person_conf_threshold, 0.05, 0.99))
+    try:
+        return select_tackle_pair_from_sequence(
+            frame_records,
+            frame_diag=frame_diag,
+            person_conf_threshold=thr,
+            motion_sum=motion_sum,
+            presence=presence,
+        )
+    except ValueError:
+        fb = _find_climax_pair(frame_records, frame_diag)
+        if fb is not None:
+            return fb[1], fb[2], fb[0], 0.0
+        ordered_motion = sorted(motion_sum.items(), key=lambda kv: -kv[1])
+        if len(ordered_motion) >= 2:
+            return int(ordered_motion[0][0]), int(ordered_motion[1][0]), None, 0.0
+        raise SystemExit("Could not find two person tracks in video.")
+
+
 def _build_track_interpolated_boxes(
     track_id: int,
     frame_records: list[dict],
@@ -1518,35 +1552,17 @@ def run_climax_anchored_pipeline(
 
         frame_records.append(rec)
 
-    climax_result = _find_climax_pair(frame_records, frame_diag, climax_smooth_window)
-    climax_frame_idx: int | None = None
-
-    if climax_result is not None:
-        climax_frame_idx, tid_a, tid_b = climax_result
-        print(f"Climax frame {climax_frame_idx}: tid_a={tid_a} tid_b={tid_b}")
-    else:
-        print("Climax pair not found — falling back to top-motion tracks")
-        ordered_motion = sorted(motion_sum.items(), key=lambda kv: -kv[1])
-        top_ids: list[int] = [int(t) for t, _ in ordered_motion[:2]]
-
-        if len(top_ids) < 2:
-            extra = sorted(
-                [(t, c) for t, c in presence.items() if t not in top_ids],
-                key=lambda kv: -kv[1],
-            )
-            for t, _ in extra:
-                top_ids.append(int(t))
-                if len(top_ids) >= 2:
-                    break
-
-        if len(top_ids) < 2:
-            raise SystemExit("Could not find two person tracks in video.")
-        tid_a, tid_b = top_ids[0], top_ids[1]
-        if tid_a == tid_b:
-            for t, _ in sorted(presence.items(), key=lambda kv: -kv[1]):
-                if int(t) != tid_a:
-                    tid_b = int(t)
-                    break
+    tid_a, tid_b, climax_frame_idx, pair_conf = _select_players_of_interest(
+        frame_records,
+        frame_diag,
+        motion_sum,
+        presence,
+        person_conf_threshold=max(0.25, conf),
+    )
+    print(
+        f"Tackle pair (scorer): tid_a={tid_a} tid_b={tid_b} "
+        f"| confidence={pair_conf:.3f} | peak_frame={climax_frame_idx}"
+    )
 
     carrier_tid, tackler_tid, possession_stats = _choose_ballcarrier_from_possession(
         frames,
@@ -1766,35 +1782,17 @@ def run_top_motion_carrier_tackler_pipeline(
 
         frame_records.append(rec)
 
-    climax_result = _find_climax_pair(frame_records, frame_diag, climax_smooth_window)
-    climax_frame_idx: int | None = None
-
-    if climax_result is not None:
-        climax_frame_idx, tid_a, tid_b = climax_result
-        print(f"Climax frame {climax_frame_idx}: tid_a={tid_a} tid_b={tid_b}")
-    else:
-        print("Climax pair not found — falling back to top-motion tracks")
-        ordered_motion = sorted(motion_sum.items(), key=lambda kv: -kv[1])
-        top_ids: list[int] = [int(t) for t, _ in ordered_motion[:2]]
-
-        if len(top_ids) < 2:
-            extra = sorted(
-                [(t, c) for t, c in presence.items() if t not in top_ids],
-                key=lambda kv: -kv[1],
-            )
-            for t, _ in extra:
-                top_ids.append(int(t))
-                if len(top_ids) >= 2:
-                    break
-
-        if len(top_ids) < 2:
-            raise SystemExit("Could not find two person tracks in video.")
-        tid_a, tid_b = top_ids[0], top_ids[1]
-        if tid_a == tid_b:
-            for t, _ in sorted(presence.items(), key=lambda kv: -kv[1]):
-                if int(t) != tid_a:
-                    tid_b = int(t)
-                    break
+    tid_a, tid_b, climax_frame_idx, pair_conf = _select_players_of_interest(
+        frame_records,
+        frame_diag,
+        motion_sum,
+        presence,
+        person_conf_threshold=max(0.25, conf),
+    )
+    print(
+        f"Tackle pair (scorer): tid_a={tid_a} tid_b={tid_b} "
+        f"| confidence={pair_conf:.3f} | peak_frame={climax_frame_idx}"
+    )
 
     carrier_tid, tackler_tid, possession_stats = _choose_ballcarrier_from_possession(
         frames,
@@ -2027,34 +2025,20 @@ def run_top_motion_carrier_tackler_pipeline(
 
         frame_records.append(rec)
 
-    ordered_motion = sorted(motion_sum.items(), key=lambda kv: -kv[1])
-    top_ids: list[int] = [int(t) for t, _ in ordered_motion[:2]]
-
-    if len(top_ids) < 2:
-        extra = sorted(
-            [(t, c) for t, c in presence.items() if t not in top_ids],
-            key=lambda kv: -kv[1],
-        )
-        for t, _ in extra:
-            top_ids.append(int(t))
-            if len(top_ids) >= 2:
-                break
-
-    if len(top_ids) < 2:
-        raise SystemExit("Could not find two person tracks in video.")
-    if football_model is not None:
-        refined = _refine_top_tracks_with_football_support(
-            frames,
-            frame_records,
-            motion_sum,
-            presence,
-            football_model,
-            football_conf=football_conf,
-            device=device,
-            roi_pad_ratio=football_roi_pad,
-        )
-        if len(refined) >= 2:
-            top_ids = refined
+    tid_a, tid_b, peak_frame_idx, pair_conf = _select_players_of_interest(
+        frame_records,
+        frame_diag,
+        motion_sum,
+        presence,
+        person_conf_threshold=max(0.25, conf),
+    )
+    print(
+        f"Tackle pair (scorer): tid_a={tid_a} tid_b={tid_b} "
+        f"| confidence={pair_conf:.3f} | peak_frame={peak_frame_idx}"
+    )
+    # Pair selection is intentionally football-agnostic:
+    # do not re-rank the two players using football detections.
+    top_ids: list[int] = [tid_a, tid_b]
 
     tid_a, tid_b = top_ids[0], top_ids[1]
     if tid_a == tid_b:
