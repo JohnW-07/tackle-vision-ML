@@ -22,14 +22,7 @@ clips/
 *.webm
 *.wmv
 
-/testing 
-*.mp4
-*.mov
-*.m4v
-*.mkv
-*.avi
-*.webm
-*.wmv
+/testing/
 
 # Model weights / local repos
 *.pt

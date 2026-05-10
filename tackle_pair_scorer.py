@@ -20,14 +20,16 @@ from typing import Any
 
 import numpy as np
 
-# Reduced heuristic set (4 signals only):
-# 1) rapid closing, 2) whole-video motion, 3) opposing motion, 4) dynamic persistence
-# with crowd penalty applied as a suppression term.
+# Per-frame terms + clip-level priors applied in select_tackle_pair_from_sequence.
+# Motion / presence priors match the scorer_test_11n_v3 aggregation (Strong motion bias on the pair).
 W_RAPID_CLOSING = 4.2
-W_MOTION_PRIOR = 5.0
+W_MOTION_PRIOR = 14.0
+W_PRESENCE_PRIOR = 2.0
 W_MOTION_OPPOSITION = 2.2
 W_DYNAMIC_PERSISTENCE = 2.0
 W_CROWD_PENALTY = 2.4
+W_ACTION_CLUSTER = 1.6
+W_FAST_CONTACT = 2.0
 
 # Normalization / thresholds (fraction of frame diagonal unless noted)
 R_DENSITY_NORM = 0.28  # radius around pair midpoint to count crowd
@@ -44,6 +46,8 @@ SMOOTH_SWITCH_MARGIN = 0.08  # absolute score margin on normalized scale
 LOCK_DECAY = 0.92  # when forcing previous pair, decay locked strength slightly
 MIN_DYNAMIC_FRAMES_FOR_VALID_PAIR = 6
 MIN_CLOSING_SUM_FOR_VALID_PAIR = 0.045  # summed normalized positive closing
+LOW_DYNAMIC_LOCK_BREAK_SCORE = 0.85
+LOCK_BREAK_FRAMES = 7
 
 
 def _iou_xyxy(a: np.ndarray, b: np.ndarray) -> float:
@@ -71,6 +75,8 @@ class _FrameScratch:
     prev_dist: dict[tuple[int, int], float] = field(default_factory=dict)
     prev_iou: dict[tuple[int, int], float] = field(default_factory=dict)
     persistence: dict[tuple[int, int], int] = field(default_factory=dict)
+    close_ema: dict[tuple[int, int], float] = field(default_factory=dict)
+    iou_grow_ema: dict[tuple[int, int], float] = field(default_factory=dict)
 
 
 def _filter_players(
@@ -120,6 +126,8 @@ def score_pair_for_frame(
     vel_i: np.ndarray | None,
     vel_j: np.ndarray | None,
     frame_max_closing: float,
+    median_height: float,
+    action_center: np.ndarray,
 ) -> tuple[float, dict[str, float]]:
     """Returns (total_score, debug_components)."""
     diag = float(frame_diag) + 1e-6
@@ -136,12 +144,22 @@ def score_pair_for_frame(
 
     pk = _pair_key(tid_i, tid_j)
     prev_d = scratch.prev_dist.get(pk)
+    prev_iou = scratch.prev_iou.get(pk, iou)
     delta_d_norm = 0.0
     if prev_d is not None:
         delta_d_norm = (prev_d - d) / diag
     closing_raw = max(0.0, delta_d_norm)
     rapid_closing_score = closing_raw / (frame_max_closing + 1e-6)
     rapid_closing_score = float(np.clip(rapid_closing_score, 0.0, 1.0))
+    iou_grow = max(0.0, iou - prev_iou)
+
+    prev_close_ema = scratch.close_ema.get(pk, 0.0)
+    prev_iou_ema = scratch.iou_grow_ema.get(pk, 0.0)
+    close_ema = 0.62 * prev_close_ema + 0.38 * closing_raw
+    iou_ema = 0.62 * prev_iou_ema + 0.38 * iou_grow
+    scratch.close_ema[pk] = close_ema
+    scratch.iou_grow_ema[pk] = iou_ema
+    fast_contact_score = float(np.clip((close_ema / 0.010) + (iou_ema / 0.035), 0.0, 1.0))
 
     scratch.prev_dist[pk] = d
     scratch.prev_iou[pk] = iou
@@ -149,16 +167,28 @@ def score_pair_for_frame(
     # Velocity-based motion opposition (Step 3.6, 8.1)
     motion_opposition_score = 0.0
     speed_i = speed_j = 0.0
+    approach_i = approach_j = 0.0
     if vel_i is not None and vel_j is not None:
-        speed_i = float(np.linalg.norm(vel_i)) / diag
-        speed_j = float(np.linalg.norm(vel_j)) / diag
+        h_i = max(1.0, float(box_i[3] - box_i[1]))
+        h_j = max(1.0, float(box_j[3] - box_j[1]))
+        scale_i = float(np.clip(median_height / h_i, 0.65, 1.35))
+        scale_j = float(np.clip(median_height / h_j, 0.65, 1.35))
+        speed_i = (float(np.linalg.norm(vel_i)) / diag) * scale_i
+        speed_j = (float(np.linalg.norm(vel_j)) / diag) * scale_j
         denom = speed_i * speed_j + 1e-9
         cos_align = float(np.dot(vel_i, vel_j)) / denom
         motion_opposition_score = max(0.0, (-cos_align) * 0.5 + 0.5)
         if np.dot(vel_i, vel_j) > 0:
             motion_opposition_score *= SAME_DIRECTION_SCALE
+        u_ij = (c_j - c_i) / (float(np.linalg.norm(c_j - c_i)) + 1e-6)
+        u_ji = -u_ij
+        approach_i = float(np.dot(vel_i, u_ij)) / diag
+        approach_j = float(np.dot(vel_j, u_ji)) / diag
 
     max_speed = max(speed_i, speed_j)
+    mutual_approach_ok = True
+    if vel_i is not None and vel_j is not None:
+        mutual_approach_ok = approach_i > 0.0012 and approach_j > 0.0012
 
     # Dynamic persistence favors pairs that repeatedly close quickly.
     dynamic_contact = max_speed >= MIN_VEL_STRONG_NORM or closing_raw >= MIN_CLOSING_FOR_DYNAMIC
@@ -168,24 +198,36 @@ def score_pair_for_frame(
         scratch.persistence[pk] = 0
     persistence_frames = scratch.persistence[pk]
     dynamic_persistence_score = min(1.0, persistence_frames / float(T_PERSIST))
+    if not mutual_approach_ok:
+        dynamic_persistence_score *= 0.5
 
     crowd_term = W_CROWD_PENALTY * crowd_penalty
+    action_dist = float(np.linalg.norm(mid - action_center)) / (0.38 * diag + 1e-6)
+    action_cluster_score = max(0.0, 1.0 - action_dist)
 
     total = (
         W_RAPID_CLOSING * rapid_closing_score
         + W_MOTION_OPPOSITION * motion_opposition_score
         + W_DYNAMIC_PERSISTENCE * dynamic_persistence_score
+        + W_FAST_CONTACT * fast_contact_score
+        + W_ACTION_CLUSTER * action_cluster_score
         - crowd_term
     )
 
     # Hard reject stationary/slowly changing pairs even if close.
     if not dynamic_contact and iou < 0.08:
         total = -1.0
+    # Hard gate: two players must be moving toward each other to be considered tackle pair.
+    if not mutual_approach_ok and iou < 0.14 and fast_contact_score < 0.50:
+        total *= 0.15
 
     debug = {
         "closing": rapid_closing_score,
         "motion_opp": motion_opposition_score,
         "persist": dynamic_persistence_score,
+        "fast_contact": fast_contact_score,
+        "action_cluster": action_cluster_score,
+        "mutual_approach": 1.0 if mutual_approach_ok else 0.0,
         "crowd": crowd_penalty,
         "iou": iou,
         "conf_avg": 0.5 * (conf_i + conf_j),
@@ -225,6 +267,8 @@ def best_pair_one_frame(
         return None, 0.0, None
 
     centers = [_box_center_xyxy(pxy[i].astype(np.float64)) for i in keep]
+    heights = [max(1.0, float(pxy[i][3] - pxy[i][1])) for i in keep]
+    median_height = float(np.median(np.array(heights, dtype=np.float64)))
     best_key: tuple[int, int] | None = None
     best_score = -1e18
     best_boxes: tuple[np.ndarray, np.ndarray] | None = None
@@ -248,6 +292,19 @@ def best_pair_one_frame(
             else:
                 frame_closing_vals.append(max(0.0, (d_prev - d_now) / (frame_diag + 1e-6)))
     frame_max_closing = max(frame_closing_vals) if frame_closing_vals else 0.0
+    moving_centers: list[np.ndarray] = []
+    for idx, ki in enumerate(keep):
+        tid = int(pids[ki])
+        prev_c = scratch.prev_centers.get(tid)
+        if prev_c is None:
+            continue
+        sp = float(np.linalg.norm(centers[idx] - prev_c)) / (frame_diag + 1e-6)
+        if sp >= MIN_VEL_STRONG_NORM:
+            moving_centers.append(centers[idx])
+    if moving_centers:
+        action_center = np.mean(np.array(moving_centers, dtype=np.float64), axis=0)
+    else:
+        action_center = np.mean(np.array(centers, dtype=np.float64), axis=0)
 
     for ai in range(len(keep)):
         for bi in range(ai + 1, len(keep)):
@@ -277,6 +334,8 @@ def best_pair_one_frame(
                 vel_i=vel_a,
                 vel_j=vel_b,
                 frame_max_closing=frame_max_closing,
+                median_height=median_height,
+                action_center=action_center,
             )
 
             pk = _pair_key(tid_a, tid_b)
@@ -382,6 +441,18 @@ def _pair_motion_prior(
     return float(np.clip(mean_motion / (max_motion + 1e-6), 0.0, 1.0))
 
 
+def _pair_presence_prior(
+    pair: tuple[int, int],
+    presence: dict[int, int] | None,
+    max_presence: float,
+) -> float:
+    if not presence:
+        return 0.0
+    a, b = int(pair[0]), int(pair[1])
+    mean_p = 0.5 * (float(presence.get(a, 0)) + float(presence.get(b, 0)))
+    return float(np.clip(mean_p / (max_presence + 1e-6), 0.0, 1.0))
+
+
 def select_tackle_pair_from_sequence(
     frame_records: list[dict[str, Any]],
     *,
@@ -402,6 +473,7 @@ def select_tackle_pair_from_sequence(
     scratch = _FrameScratch()
     locked_pair: tuple[int, int] | None = None
     locked_strength = 0.0
+    low_dynamic_run = 0
     pair_accum: dict[tuple[int, int], float] = defaultdict(float)
     pair_best_frame: dict[tuple[int, int], tuple[float, int]] = {}
 
@@ -414,6 +486,15 @@ def select_tackle_pair_from_sequence(
         )
         if raw_key is None:
             continue
+
+        if raw_score < LOW_DYNAMIC_LOCK_BREAK_SCORE:
+            low_dynamic_run += 1
+        else:
+            low_dynamic_run = 0
+        if locked_pair is not None and low_dynamic_run >= LOCK_BREAK_FRAMES:
+            locked_pair = None
+            locked_strength = 0.0
+            low_dynamic_run = 0
 
         chosen = raw_key
         if locked_pair is None:
@@ -441,6 +522,7 @@ def select_tackle_pair_from_sequence(
         raise ValueError("no tackle pair scores and no fallback motion/presence")
 
     max_motion = max(motion_sum.values()) if motion_sum else 1.0
+    max_presence = float(max(presence.values()) if presence else 1)
     rescored: list[tuple[float, tuple[int, int], float]] = []
     for pair, base in pair_accum.items():
         dyn_frames, closing_sum = _pair_dynamic_evidence(frame_records, pair, frame_diag)
@@ -451,12 +533,26 @@ def select_tackle_pair_from_sequence(
         ):
             continue
         motion_prior = _pair_motion_prior(pair, motion_sum, max_motion)
-        final_score = base + W_MOTION_PRIOR * motion_prior
+        presence_prior = _pair_presence_prior(pair, presence, max_presence)
+        final_score = (
+            base
+            + W_MOTION_PRIOR * motion_prior
+            + W_PRESENCE_PRIOR * presence_prior
+        )
         rescored.append((final_score, pair, base))
     if not rescored:
         for pair, base in pair_accum.items():
             motion_prior = _pair_motion_prior(pair, motion_sum, max_motion)
-            rescored.append((base + W_MOTION_PRIOR * motion_prior, pair, base))
+            presence_prior = _pair_presence_prior(pair, presence, max_presence)
+            rescored.append(
+                (
+                    base
+                    + W_MOTION_PRIOR * motion_prior
+                    + W_PRESENCE_PRIOR * presence_prior,
+                    pair,
+                    base,
+                )
+            )
     rescored.sort(key=lambda x: -x[0])
     ranked = [(pair, final) for final, pair, _ in rescored]
     best_pair = ranked[0][0]

@@ -1718,236 +1718,6 @@ def run_top_motion_carrier_tackler_pipeline(
     max_frames: int = 4500,
     pose_weights: str | None = DEFAULT_POSE_WEIGHTS,
     pose_conf: float = 0.18,
-    climax_smooth_window: int = 5,
-) -> None:
-    """
-    Climax-anchored tackle detection: finds the moment of peak player interaction,
-    locks those two tracks, then renders them with interpolation through the full clip.
-    """
-    cap = cv2.VideoCapture(str(input_path))
-    if not cap.isOpened():
-        raise SystemExit(f"Cannot open video: {input_path}")
-
-    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    frame_diag = float(np.hypot(width, height))
-
-    frames: list[np.ndarray] = []
-    while len(frames) < max_frames:
-        ok, frame_bgr = cap.read()
-        if not ok:
-            break
-        frames.append(frame_bgr)
-    cap.release()
-
-    if not frames:
-        raise SystemExit(f"No frames read from {input_path}")
-
-    model = YOLO(weights)
-    motion_sum: dict[int, float] = defaultdict(float)
-    last_center: dict[int, np.ndarray] = {}
-    presence: dict[int, int] = defaultdict(int)
-    frame_records: list[dict] = []
-
-    for frame_bgr in frames:
-        rec: dict = {
-            "person_ids": np.array([], dtype=np.int64),
-            "person_xyxy": np.empty((0, 4), dtype=np.float64),
-            "person_confs": np.array([], dtype=np.float64),
-            "ball_xyxy": np.empty((0, 4), dtype=np.float64),
-            "ball_confs": np.array([], dtype=np.float64),
-        }
-        person_ids, person_xyxy, person_confs, ball_xyxy, ball_confs = _detect_people_and_ball_candidates(
-            model,
-            frame_bgr,
-            person_conf=conf,
-            ball_conf=ball_conf,
-            device=device,
-            persist_people=True,
-        )
-        rec["person_ids"] = person_ids
-        rec["person_xyxy"] = person_xyxy
-        rec["person_confs"] = person_confs
-        rec["ball_xyxy"] = ball_xyxy
-        rec["ball_confs"] = ball_confs
-
-        for tid, box in zip(person_ids, person_xyxy, strict=True):
-            tid_i = int(tid)
-            presence[tid_i] += 1
-            c = _box_center(box)
-            if tid_i in last_center:
-                motion_sum[tid_i] += float(np.linalg.norm(c - last_center[tid_i]))
-            last_center[tid_i] = c
-
-        frame_records.append(rec)
-
-    tid_a, tid_b, climax_frame_idx, pair_conf = _select_players_of_interest(
-        frame_records,
-        frame_diag,
-        motion_sum,
-        presence,
-        person_conf_threshold=max(0.25, conf),
-    )
-    print(
-        f"Tackle pair (scorer): tid_a={tid_a} tid_b={tid_b} "
-        f"| confidence={pair_conf:.3f} | peak_frame={climax_frame_idx}"
-    )
-
-    carrier_tid, tackler_tid, possession_stats = _choose_ballcarrier_from_possession(
-        frames,
-        frame_records,
-        tid_a,
-        tid_b,
-        frame_diag,
-    )
-
-    carrier_boxes = _build_track_interpolated_boxes(carrier_tid, frame_records)
-    tackler_boxes = _build_track_interpolated_boxes(tackler_tid, frame_records)
-    carrier_boxes = _relink_fragmented_track(carrier_boxes, carrier_tid, frame_records)
-    tackler_boxes = _relink_fragmented_track(tackler_boxes, tackler_tid, frame_records)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    writer = _open_writer(output_path, fps, width, height)
-
-    pose_model: YOLO | None = None
-    if pose_weights:
-        try:
-            pose_model = YOLO(pose_weights)
-        except FileNotFoundError as e:
-            raise SystemExit(
-                "Pose model file not found: "
-                f"{pose_weights}. Put the weights file at that path, set "
-                "TOP_MOTION_POSE_MODEL to an available model, or run with --no-pose."
-            ) from e
-
-    try:
-        for frame_idx, (frame_bgr, rec) in enumerate(zip(frames, frame_records, strict=True)):
-            pose_boxes = np.empty((0, 4))
-            pose_kpts = np.empty((0, 17, 3))
-            if pose_model is not None:
-                pkw: dict = {"conf": pose_conf, "verbose": False}
-                if device:
-                    pkw["device"] = device
-                pres = pose_model(frame_bgr, **pkw)[0]
-                if pres.boxes is not None and len(pres.boxes):
-                    pose_boxes = pres.boxes.xyxy.cpu().numpy()
-                if pres.keypoints is not None and len(pres.keypoints):
-                    pose_kpts = pres.keypoints.data.cpu().numpy()
-
-            carrier_box = carrier_boxes.get(frame_idx)
-            tackler_box = tackler_boxes.get(frame_idx)
-
-            ball_box: np.ndarray | None = None
-            ball_label = "Football"
-            if carrier_box is not None:
-                _, ball_box, ball_source = _player_ball_possession_score(
-                    frame_bgr,
-                    carrier_box,
-                    rec["ball_xyxy"],
-                    rec["ball_confs"],
-                    frame_diag,
-                )
-                if ball_box is None:
-                    ball_box = _estimate_ball_box_from_carrier(carrier_box)
-                    ball_label = "Football (est)"
-                elif ball_source == "roi":
-                    ball_label = "Football"
-
-            if ball_box is not None:
-                draw_player_box(
-                    frame_bgr,
-                    ball_box,
-                    color=(0, 255, 255),
-                    label=ball_label,
-                )
-
-            for role_box, label, color, sk_color in (
-                (carrier_box, "Ball Carrier", (255, 0, 0), (0, 220, 120)),
-                (tackler_box, "Tackler", (0, 0, 255), (100, 200, 255)),
-            ):
-                if role_box is None:
-                    continue
-                draw_player_box(frame_bgr, role_box, color=color, label=label)
-
-                if (
-                    pose_model is not None
-                    and len(pose_boxes) > 0
-                    and len(pose_kpts) > 0
-                ):
-                    kp = _best_pose_keypoints_for_box(pose_boxes, pose_kpts, role_box)
-                    if kp is not None:
-                        _draw_pose_skeleton_on_player(
-                            frame_bgr,
-                            kp,
-                            line_color=sk_color,
-                            joint_color=sk_color,
-                            conf_thresh=pose_conf,
-                        )
-                        ht = _head_rotation_text(kp)
-                        if ht:
-                            bx1 = int(role_box[0])
-                            by1 = int(role_box[1])
-                            cv2.putText(
-                                frame_bgr,
-                                ht[:56],
-                                (bx1, min(height - 8, by1 + 78)),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.45,
-                                sk_color,
-                                1,
-                                lineType=cv2.LINE_AA,
-                            )
-
-            if pose_model is not None and ANNOTATE_POSE_MODEL_NAME:
-                pose_label = f"pose model: {Path(str(pose_weights)).name}"
-                cv2.putText(
-                    frame_bgr,
-                    pose_label[:80],
-                    (16, 28),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (255, 255, 255),
-                    2,
-                    lineType=cv2.LINE_AA,
-                )
-                cv2.putText(
-                    frame_bgr,
-                    pose_label[:80],
-                    (16, 28),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (20, 20, 20),
-                    1,
-                    lineType=cv2.LINE_AA,
-                )
-
-            writer.write(frame_bgr)
-    finally:
-        writer.release()
-
-    carrier_stats = possession_stats[carrier_tid]
-    tackler_stats = possession_stats[tackler_tid]
-    climax_info = f"climax_frame={climax_frame_idx}" if climax_frame_idx is not None else "climax=fallback"
-    print(
-        f"{climax_info} | IDs: {tid_a}, {tid_b} | carrier={carrier_tid} tackler={tackler_tid} "
-        f"| wins {carrier_tid}:{carrier_stats['wins']:.0f} vs {tackler_tid}:{tackler_stats['wins']:.0f} "
-        f"| evidence {carrier_tid}:{carrier_stats['evidence_frames']:.0f} vs {tackler_tid}:{tackler_stats['evidence_frames']:.0f} "
-        f"| wrote {len(frames)} frames to {output_path}"
-    )
-
-
-def run_top_motion_carrier_tackler_pipeline(
-    input_path: Path,
-    output_path: Path,
-    *,
-    weights: str,
-    conf: float,
-    ball_conf: float,
-    device: str | None,
-    max_frames: int = 4500,
-    pose_weights: str | None = DEFAULT_POSE_WEIGHTS,
-    pose_conf: float = 0.18,
     football_weights: str | None = None,
     football_conf: float = DEFAULT_RESTRICTED_FOOTBALL_CONF,
     football_roi_pad: float = DEFAULT_FOOTBALL_ROI_PAD,
@@ -2032,20 +1802,15 @@ def run_top_motion_carrier_tackler_pipeline(
         presence,
         person_conf_threshold=max(0.25, conf),
     )
-    print(
-        f"Tackle pair (scorer): tid_a={tid_a} tid_b={tid_b} "
-        f"| confidence={pair_conf:.3f} | peak_frame={peak_frame_idx}"
-    )
-    # Pair selection is intentionally football-agnostic:
-    # do not re-rank the two players using football detections.
-    top_ids: list[int] = [tid_a, tid_b]
-
-    tid_a, tid_b = top_ids[0], top_ids[1]
     if tid_a == tid_b:
         for t, _ in sorted(presence.items(), key=lambda kv: -kv[1]):
             if int(t) != tid_a:
                 tid_b = int(t)
                 break
+    print(
+        f"Tackle pair (scorer, 11n_v3-style priors): tid_a={tid_a} tid_b={tid_b} "
+        f"| confidence={pair_conf:.3f} | peak_frame={peak_frame_idx}"
+    )
 
     # Optional path: run football model only inside the two selected player ROIs.
     if football_model is not None:
@@ -2612,13 +2377,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--all",
         action="store_true",
-        help="Process all videos in the input directory (default: raws/).",
+        help="Process all videos under the input directory recursively (default: raws/).",
     )
     p.add_argument(
         "--input-dir",
         type=Path,
         default=DEFAULT_ALL_INPUT_DIR,
-        help="Directory to scan when --all is used (default: raws/).",
+        help="Directory to scan recursively when --all is used (default: raws/).",
     )
     p.add_argument(
         "--mode",
@@ -2814,7 +2579,8 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(f"Input directory not found: {input_dir}")
 
         videos = sorted(
-            p for p in input_dir.iterdir()
+            p
+            for p in input_dir.rglob("*")
             if p.is_file() and p.suffix.lower() in VIDEO_SUFFIXES
         )
         if not videos:

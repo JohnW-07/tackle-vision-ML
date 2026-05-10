@@ -1,0 +1,11 @@
+#!/bin/sh
+# Block committing common video blobs (outputs live under ignored dirs like finals/).
+blocked=$(git diff --cached --name-only --diff-filter=ACM |
+  grep -E '\.(mp4|m4v|mov|wmv|avi|mkv|webm)$' || true)
+if [ -n "$blocked" ]; then
+  echo "pre-commit: refusing commit — video files must not be staged:" >&2
+  echo "$blocked" >&2
+  echo "Tip: git restore --staged -- <file>" >&2
+  exit 1
+fi
+exit 0
