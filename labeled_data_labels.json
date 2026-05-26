@@ -1,0 +1,369 @@
+{
+  "schema_version": "labels.avg.v1",
+  "labels": {
+    "MP1009_Imp25-26_MP1059_Imp12_comp": {
+      "head_neck": 3.67,
+      "upper_extremity": 2.33,
+      "com_spine": 3.0,
+      "lower_extremity": 2.33,
+      "overall_avg": 2.83
+    },
+    "MP1009_Imp51_MP1059_Imp15_comp": {
+      "head_neck": 3.33,
+      "upper_extremity": 2.33,
+      "com_spine": 2.67,
+      "lower_extremity": 1.0,
+      "overall_avg": 2.33
+    },
+    "MP1034_Imp13_MP1039_Imp10_comp": {
+      "head_neck": 3.0,
+      "upper_extremity": 1.0,
+      "com_spine": 1.0,
+      "lower_extremity": 1.0,
+      "overall_avg": 1.5
+    },
+    "MP1035_Imp19_MP39_Imp2_comp": {
+      "head_neck": 3.0,
+      "upper_extremity": 2.0,
+      "com_spine": 2.33,
+      "lower_extremity": 1.5,
+      "overall_avg": 2.21
+    },
+    "MP1035_Imp24_comp": {
+      "head_neck": 1.83,
+      "upper_extremity": 2.0,
+      "com_spine": 1.33,
+      "lower_extremity": 1.5,
+      "overall_avg": 1.67
+    },
+    "MP1035_Imp9_comp": {
+      "head_neck": 2.33,
+      "upper_extremity": 1.83,
+      "com_spine": 2.0,
+      "lower_extremity": 2.17,
+      "overall_avg": 2.08
+    },
+    "MP1036_Imp121_comp": {
+      "head_neck": 3.0,
+      "upper_extremity": 2.5,
+      "com_spine": 3.0,
+      "lower_extremity": 1.0,
+      "overall_avg": 2.38
+    },
+    "MP1036_Imp69_comp": {
+      "head_neck": 4.0,
+      "upper_extremity": 2.33,
+      "com_spine": 2.0,
+      "lower_extremity": 1.67,
+      "overall_avg": 2.5
+    },
+    "MP1038_Imp15_comp": {
+      "head_neck": 2.0,
+      "upper_extremity": 1.5,
+      "com_spine": 2.5,
+      "lower_extremity": 2.0,
+      "overall_avg": 2.0
+    },
+    "MP1038_Imp6_comp": {
+      "head_neck": 3.0,
+      "upper_extremity": 2.0,
+      "com_spine": 2.0,
+      "lower_extremity": 2.0,
+      "overall_avg": 2.25
+    },
+    "MP1039_Imp1_comp": {
+      "head_neck": 1.67,
+      "upper_extremity": 2.0,
+      "com_spine": 1.33,
+      "lower_extremity": 1.67,
+      "overall_avg": 1.67
+    },
+    "MP1039_Imp3_comp": {
+      "head_neck": 2.0,
+      "upper_extremity": 2.0,
+      "com_spine": 3.0,
+      "lower_extremity": 3.0,
+      "overall_avg": 2.5
+    },
+    "MP1039_Imp5_comp": {
+      "head_neck": 3.0,
+      "upper_extremity": 1.5,
+      "com_spine": 2.5,
+      "lower_extremity": 2.5,
+      "overall_avg": 2.38
+    },
+    "MP1039_Imp6_comp": {
+      "head_neck": 3.0,
+      "upper_extremity": 2.0,
+      "com_spine": 2.0,
+      "lower_extremity": 2.0,
+      "overall_avg": 2.25
+    },
+    "MP1040_Imp4_comp": {
+      "head_neck": 2.67,
+      "upper_extremity": 1.33,
+      "com_spine": 1.67,
+      "lower_extremity": 1.33,
+      "overall_avg": 1.75
+    },
+    "MP1040_Imp5_comp": {
+      "head_neck": 3.0,
+      "upper_extremity": 2.0,
+      "com_spine": 1.33,
+      "lower_extremity": 1.67,
+      "overall_avg": 2.0
+    },
+    "MP1040_Imp6_comp": {
+      "head_neck": 3.5,
+      "upper_extremity": 2.0,
+      "com_spine": 1.5,
+      "lower_extremity": 2.0,
+      "overall_avg": 2.25
+    },
+    "MP1045_Imp2_MP1050_Imp4_comp": {
+      "head_neck": 1.0,
+      "upper_extremity": 1.0,
+      "com_spine": 1.0,
+      "lower_extremity": 1.0,
+      "overall_avg": 1.0
+    },
+    "MP1052_Imp16_comp": {
+      "head_neck": 2.17,
+      "upper_extremity": 2.0,
+      "com_spine": 2.17,
+      "lower_extremity": 1.5,
+      "overall_avg": 1.96
+    },
+    "MP1052_Imp17-18_comp": {
+      "head_neck": 2.33,
+      "upper_extremity": 1.5,
+      "com_spine": 1.83,
+      "lower_extremity": 1.5,
+      "overall_avg": 1.79
+    },
+    "MP1052_Imp19_comp": {
+      "head_neck": 3.0,
+      "upper_extremity": 1.5,
+      "com_spine": 2.0,
+      "lower_extremity": 1.83,
+      "overall_avg": 2.08
+    },
+    "MP1052_Imp20-21_comp": {
+      "head_neck": 1.25,
+      "upper_extremity": 1.5,
+      "com_spine": 1.75,
+      "lower_extremity": 1.5,
+      "overall_avg": 1.5
+    },
+    "MP1052_Imp6_comp": {
+      "head_neck": 2.67,
+      "upper_extremity": 2.0,
+      "com_spine": 1.67,
+      "lower_extremity": 1.33,
+      "overall_avg": 1.92
+    },
+    "MP1052_Imp7_comp": {
+      "head_neck": 3.5,
+      "upper_extremity": 1.33,
+      "com_spine": 1.83,
+      "lower_extremity": 2.0,
+      "overall_avg": 2.17
+    },
+    "MP1059_Imp3_comp": {
+      "head_neck": 2.0,
+      "upper_extremity": 2.0,
+      "com_spine": 2.0,
+      "lower_extremity": 2.0,
+      "overall_avg": 2.0
+    },
+    "MP442_Imp12_13_MP475_Imp19": {
+      "head_neck": 2.33,
+      "upper_extremity": 1.67,
+      "com_spine": 2.33,
+      "lower_extremity": 2.0,
+      "overall_avg": 2.08
+    },
+    "MP442_Imp17": {
+      "head_neck": 1.33,
+      "upper_extremity": 1.33,
+      "com_spine": 1.33,
+      "lower_extremity": 1.67,
+      "overall_avg": 1.42
+    },
+    "MP453_Imp15": {
+      "head_neck": 3.0,
+      "upper_extremity": 2.67,
+      "com_spine": 2.33,
+      "lower_extremity": 2.33,
+      "overall_avg": 2.58
+    },
+    "MP453_Imp95_96": {
+      "head_neck": 4.0,
+      "upper_extremity": 3.0,
+      "com_spine": 2.5,
+      "lower_extremity": 2.0,
+      "overall_avg": 2.88
+    },
+    "MP459_Imp13_14": {
+      "head_neck": 4.0,
+      "upper_extremity": 2.0,
+      "com_spine": 2.0,
+      "lower_extremity": 3.0,
+      "overall_avg": 2.75
+    },
+    "MP459_Imp15": {
+      "head_neck": 3.0,
+      "upper_extremity": 2.0,
+      "com_spine": 2.0,
+      "lower_extremity": 2.0,
+      "overall_avg": 2.25
+    },
+    "MP459_Imp17_MP523_Imp7": {
+      "head_neck": 4.0,
+      "upper_extremity": 1.5,
+      "com_spine": 1.0,
+      "lower_extremity": 1.5,
+      "overall_avg": 2.0
+    },
+    "MP459_Imp9_MP523_Imp17": {
+      "head_neck": 2.33,
+      "upper_extremity": 2.33,
+      "com_spine": 2.67,
+      "lower_extremity": 2.0,
+      "overall_avg": 2.33
+    },
+    "MP472_Imp4_MP528_Imp116": {
+      "head_neck": 2.0,
+      "upper_extremity": 2.0,
+      "com_spine": 2.0,
+      "lower_extremity": 1.5,
+      "overall_avg": 1.88
+    },
+    "MP472_Imp5_MP475_Imp263_264": {
+      "head_neck": 2.0,
+      "upper_extremity": 2.0,
+      "com_spine": 3.0,
+      "lower_extremity": 2.0,
+      "overall_avg": 2.25
+    },
+    "MP475_Imp261_MP518_Imp80": {
+      "head_neck": 1.5,
+      "upper_extremity": 2.0,
+      "com_spine": 2.5,
+      "lower_extremity": 2.0,
+      "overall_avg": 2.0
+    },
+    "MP475_Imp54": {
+      "head_neck": 3.0,
+      "upper_extremity": 2.0,
+      "com_spine": 2.0,
+      "lower_extremity": 2.0,
+      "overall_avg": 2.25
+    },
+    "MP475_Imp6_7": {
+      "head_neck": 2.33,
+      "upper_extremity": 1.33,
+      "com_spine": 2.33,
+      "lower_extremity": 2.0,
+      "overall_avg": 2.0
+    },
+    "MP475_Imp71": {
+      "head_neck": 2.0,
+      "upper_extremity": 2.0,
+      "com_spine": 2.0,
+      "lower_extremity": 2.0,
+      "overall_avg": 2.0
+    },
+    "MP475_Imp72": {
+      "head_neck": 2.0,
+      "upper_extremity": 3.0,
+      "com_spine": 2.5,
+      "lower_extremity": 3.0,
+      "overall_avg": 2.63
+    },
+    "MP482_Imp13": {
+      "head_neck": 2.25,
+      "upper_extremity": 2.5,
+      "com_spine": 2.625,
+      "lower_extremity": 1.25,
+      "overall_avg": 1.75
+    },
+    "MP482_Imp3": {
+      "head_neck": 3.5,
+      "upper_extremity": 3.0,
+      "com_spine": 3.0,
+      "lower_extremity": 3.0,
+      "overall_avg": 3.13
+    },
+    "MP496_Imp23_MP482_Imp9": {
+      "head_neck": 2.5,
+      "upper_extremity": 2.5,
+      "com_spine": 1.5,
+      "lower_extremity": 1.0,
+      "overall_avg": 1.88
+    },
+    "MP496_Imp26": {
+      "head_neck": 4.0,
+      "upper_extremity": 3.0,
+      "com_spine": 2.0,
+      "lower_extremity": 3.0,
+      "overall_avg": 3.0
+    },
+    "MP496_Imp30_MP482_Imp11": {
+      "head_neck": 1.5,
+      "upper_extremity": 2.0,
+      "com_spine": 1.5,
+      "lower_extremity": 1.5,
+      "overall_avg": 1.63
+    },
+    "MP496_Imp78_MP547_Imp3": {
+      "head_neck": 4.0,
+      "upper_extremity": 2.0,
+      "com_spine": 1.5,
+      "lower_extremity": 1.5,
+      "overall_avg": 2.25
+    },
+    "MP496_Imp81_MP523_Imp37": {
+      "head_neck": 3.33,
+      "upper_extremity": 1.33,
+      "com_spine": 2.0,
+      "lower_extremity": 1.67,
+      "overall_avg": 2.08
+    },
+    "MP518_Imp8_MP533_Imp3": {
+      "head_neck": 2.0,
+      "upper_extremity": 3.0,
+      "com_spine": 2.0,
+      "lower_extremity": 1.0,
+      "overall_avg": 2.0
+    },
+    "MP523_Imp13": {
+      "head_neck": 4.0,
+      "upper_extremity": 3.0,
+      "com_spine": 2.5,
+      "lower_extremity": 2.5,
+      "overall_avg": 3.0
+    },
+    "MP523_Imp16_17": {
+      "head_neck": 1.5531,
+      "upper_extremity": 3.2023,
+      "com_spine": 2.25541,
+      "lower_extremity": 3.2023,
+      "overall_avg": 1.25
+    },
+    "MP526_Imp14_15": {
+      "head_neck": 2.33,
+      "upper_extremity": 2.33,
+      "com_spine": 2.67,
+      "lower_extremity": 2.67,
+      "overall_avg": 2.5
+    },
+    "MP528_Imp30": {
+      "head_neck": 2.5,
+      "upper_extremity": 2.5,
+      "com_spine": 2.0,
+      "lower_extremity": 1.5,
+      "overall_avg": 2.13
+    }
+  }
+}

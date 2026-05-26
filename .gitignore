@@ -2,6 +2,11 @@
 .DS_Store
 .claude/
 Ultralytics/
+.history/
+
+# Session transcripts
+transcript.md
+transcript_*.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -21,6 +26,14 @@ clips/
 *.avi
 *.webm
 *.wmv
+
+# Generated pipeline artifacts (large data files — rebuild with scripts/)
+out/*.json
+out/*.csv
+
+# Large data dumps in schema/ — only commit the spec file (components.v1.json)
+schema/all_clips*.json
+schema/data*.json
 
 /testing/
 

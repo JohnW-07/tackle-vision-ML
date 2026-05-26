@@ -1,0 +1,210 @@
+{
+  "$schema": "",
+  "$id": "",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "video_id",
+    "meta",
+    "keypoints",
+    "components",
+    "exported_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Schema ID, e.g. 'components.v1'"
+    },
+    "video_id": {
+      "type": "string",
+      "description": "Canonical video id matching labels JSON"
+    },
+    "meta": {
+      "type": "object",
+      "description": "Clip and export metadata (units noted)",
+      "required": [
+        "fps",
+        "frame_stride",
+        "poc_index",
+        "poc_time_s",
+        "window_frames",
+        "window_start_index",
+        "window_end_index",
+        "tool_version"
+      ],
+      "properties": {
+        "fps": { "type": "number", "description": "Frames per second (Hz)" },
+        "frame_stride": {
+          "type": "integer",
+          "description": "Frame stride used when sampling (frames)"
+        },
+        "poc_index": {
+          "type": "integer",
+          "description": "POC frame index (0-based, frames)"
+        },
+        "poc_time_s": {
+          "type": "number",
+          "description": "POC time in seconds (s)"
+        },
+        "window_frames": {
+          "type": "integer",
+          "description": "Number of frames in post-POC window (frames)"
+        },
+        "window_start_index": {
+          "type": "integer",
+          "description": "Inclusive start frame index of the window (frames)"
+        },
+        "window_end_index": {
+          "type": "integer",
+          "description": "Inclusive end frame index of the window (frames)"
+        },
+        "normalization_torso_length_px": {
+          "type": ["number", "null"],
+          "description": "Torso length in pixels used to normalize distances (px) or null if not provided"
+        },
+        "tool_version": {
+          "type": "string",
+          "description": "Exporter/tool version string"
+        }
+      }
+    },
+    "keypoints": {
+      "type": "object",
+      "description": "Pose/keypoint metadata",
+      "required": [
+        "format",
+        "coords",
+        "confidence_threshold",
+        "available_keypoints_frac"
+      ],
+      "properties": {
+        "format": {
+          "type": "string",
+          "description": "Keypoint format, e.g. 'COCO-17'"
+        },
+        "coords": {
+          "type": "string",
+          "enum": ["pixel", "normalized"],
+          "description": "Coordinate units"
+        },
+        "confidence_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Confidence cutoff used for keypoints (0-1)"
+        },
+        "available_keypoints_frac": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Fraction (0-1) of frames with required keypoints present"
+        }
+      }
+    },
+    "components": {
+      "type": "object",
+      "description": "Biomechanical components and their summaries",
+      "required": [
+        "head_neck",
+        "upper_extremity",
+        "com_spine",
+        "lower_extremity"
+      ],
+      "properties": {
+        "head_neck": { "$ref": "#/definitions/component" },
+        "upper_extremity": { "$ref": "#/definitions/component" },
+        "com_spine": { "$ref": "#/definitions/component" },
+        "lower_extremity": { "$ref": "#/definitions/component" }
+      }
+    },
+    "global": {
+      "type": "object",
+      "description": "Global quality flags",
+      "properties": {
+        "quality_flag": {
+          "type": "boolean",
+          "description": "True if export meets quality thresholds"
+        }
+      },
+      "additionalProperties": false
+    },
+    "exported_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO8601 timestamp of export"
+    }
+  },
+  "definitions": {
+    "aggregate": {
+      "oneOf": [
+        { "type": "number" },
+        {
+          "type": "object",
+          "required": ["mean", "std", "min", "max", "p10", "p90"],
+          "properties": {
+            "mean": {
+              "type": ["number", "null"],
+              "description": "Mean value over window"
+            },
+            "std": {
+              "type": ["number", "null"],
+              "description": "Standard deviation over window"
+            },
+            "min": {
+              "type": ["number", "null"],
+              "description": "Minimum over window"
+            },
+            "max": {
+              "type": ["number", "null"],
+              "description": "Maximum over window"
+            },
+            "p10": {
+              "type": ["number", "null"],
+              "description": "10th percentile"
+            },
+            "p90": {
+              "type": ["number", "null"],
+              "description": "90th percentile"
+            },
+            "at_poc": {
+              "type": ["number", "null"],
+              "description": "Value at POC (if applicable)"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "component": {
+      "type": "object",
+      "description": "Component container: numeric summaries and explicit metric list; optional level and time_series",
+      "properties": {
+        "summary": {
+          "type": "object",
+          "description": "Map of metric name → aggregate (number or aggregate object)",
+          "additionalProperties": { "$ref": "#/definitions/aggregate" }
+        },
+        "metrics": {
+          "type": "array",
+          "description": "List of metric names present in `summary` (e.g. ['neck_angle_deg','ear_below_shoulder_frac'])",
+          "items": { "type": "string" }
+        },
+        "level": {
+          "type": ["integer", "null"],
+          "description": "Optional discrete level (ordinal), or null"
+        },
+        "time_series": {
+          "type": ["object", "null"],
+          "description": "Optional per-metric arrays for the window (omit to reduce size)",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": ["number", "null"] }
+          }
+        }
+      },
+      "required": ["summary", "metrics"],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
